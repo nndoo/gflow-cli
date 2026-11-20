@@ -94,7 +94,7 @@
     "PICKER": "str: 'flow-add-menu-popover-content'",
     "PICKER_OPTION": "str: \"button.asset-item[role='option']\"",
     "PICKER_SEARCH": "str: \"input[type='text']\"",
-    "PROJECT_TITLE_INPUT": "str: 'flow-editable-text input'",
+    "PROJECT_TITLE_INPUT": "str: 'flow-editable-text input, input.editable-text-input, .header-title input'",
     "PlaywrightTimeoutError": "type: type: TimeoutError",
     "RADIO": "str: \"[role='radio']\"",
     "RADIOGROUP": "str: \"[role='radiogroup']\"",

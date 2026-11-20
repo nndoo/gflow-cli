@@ -240,6 +240,8 @@ def test_anchors_are_structural_not_labels() -> None:
     assert "flow-projects-page" in mc.NEW_PROJECT_BUTTON
     assert "'add'" in mc.NEW_PROJECT_BUTTON or '"add"' in mc.NEW_PROJECT_BUTTON
     assert mc.PROJECT_TITLE_INPUT.startswith("flow-editable-text")
+    assert "editable-text-input" in mc.PROJECT_TITLE_INPUT
+    assert ".header-title" in mc.PROJECT_TITLE_INPUT
 
 
 @pytest.mark.parametrize("rpcid", [mc.CREATE_PROJECT_RPC, mc.RENAME_PROJECT_RPC])

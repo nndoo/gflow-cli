@@ -1387,7 +1387,7 @@ MIGRATED_ROOT_URL = "https://flow.google.com/"
 #: The projects page's floating `add` button — the page's only creation control.
 NEW_PROJECT_BUTTON = "flow-projects-page button:has(mat-icon:text-is('add'))"
 #: The project header's editable title.
-PROJECT_TITLE_INPUT = "flow-editable-text input"
+PROJECT_TITLE_INPUT = "flow-editable-text input, input.editable-text-input, .header-title input"
 #: `["projects/*", [null, [title]], …]` -> `[project_id, [title]]`
 CREATE_PROJECT_RPC = "jHPbke"
 #: `["projects/<id>", [title], [["project_title"]], …]` -> `[title]`
