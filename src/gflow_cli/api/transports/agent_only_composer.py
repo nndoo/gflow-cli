@@ -91,7 +91,7 @@ log = structlog.get_logger(__name__)
 Section = Literal["image", "video"]
 Confirm = Literal["account", "always", "never"]
 
-PANE = "flow-settings-view"
+PANE = ":is(flow-unified-settings-view, flow-settings-view)"
 SETTINGS_BUTTON = (
     "flow-agent-panel button:has(mat-icon:text-is('settings_2')), "
     "flow-creative-agent-prompt-box button:has(mat-icon:text-is('settings_2')), "
@@ -100,16 +100,23 @@ SETTINGS_BUTTON = (
     "button#tune"
 )
 TOGGLE_GROUP = f"{PANE} mat-button-toggle-group"
-TOGGLE_RADIO = "button[role='radio']"
+TOGGLE_RADIO = "button[role='radio'], mat-button-toggle button, button.mat-button-toggle-button"
 CONFIRM_INPUT = f"{PANE} mat-radio-button input[type='radio']"
 SAVE_BUTTON = f"{PANE} button.settings-save-button"
 #: Closes the pane without saving (measured 2026-09-15: `button.header-action` + `arrow_back`).
-PANE_BACK = "flow-agent-panel button:has(mat-icon:text-is('arrow_back'))"
+PANE_BACK = (
+    "flow-agent-panel button:has(mat-icon:text-is('arrow_back')), "
+    "flow-agent-panel button.header-action"
+)
 MODEL_PICKER = {
-    "image": f"{PANE} button.image-model-picker-button",
-    "video": f"{PANE} button.video-model-picker-button",
+    "image": (
+        f"{PANE} button:has(mat-icon:text-is('image')), {PANE} button.image-model-picker-button"
+    ),
+    "video": (
+        f"{PANE} button:has(mat-icon:text-is('videocam')), {PANE} button.video-model-picker-button"
+    ),
 }
-MENU_ITEM = "[role='menuitem']"
+MENU_ITEM = "[role='menuitem'], [role='option'], mat-list-item, button.model-option"
 EDITOR = "div.ProseMirror"
 SUBMIT = "flow-generate-icon-button button"
 IN_FLIGHT = "flow-stop-icon-button"
@@ -288,7 +295,48 @@ def _cdn_uuid(src: str, kind: str) -> str | None:
 
 
 def _picker_label(text: str) -> str:
-    return text.replace("arrow_drop_down", "").strip()
+    return text.replace("arrow_drop_down", "").replace("arrow_forward", "").strip()
+
+
+def _model_hit(text: str, wants: ModelMenuMatcher | str) -> bool:
+    if isinstance(wants, str):
+        cleaned = _picker_label(text)
+        return cleaned == wants or wants.casefold() in cleaned.casefold()
+    return wants.matches(text)
+
+
+async def _ensure_picker_visible(page: Page, picker: Locator) -> None:
+    if not await picker.is_visible():
+        sub_back = page.locator(PANE_BACK).last
+        if await sub_back.count():
+            await sub_back.click(timeout=4000)
+            await picker.wait_for(state="visible", timeout=int(PANE_S * 1000))
+
+
+async def _is_toggle_checked(target: Locator) -> bool:
+    classes = (await target.get_attribute("class")) or ""
+    if "mat-button-toggle-checked" in classes:
+        return True
+    if await target.get_attribute("aria-checked") == "true":
+        return True
+    btn = target.locator("button")
+    if await btn.count() and await btn.first.get_attribute("aria-checked") == "true":
+        return True
+    return False
+
+
+async def _set_legacy_confirm(page: Page, confirm: Confirm, val: str) -> bool:
+    radio = page.locator(f"{CONFIRM_INPUT}[value='{val}']")
+    if await radio.count() != 1:
+        return False
+    if not await radio.is_checked():
+        try:
+            await radio.check(timeout=4000)
+        except PlaywrightError as exc:
+            raise UiSelectorDriftError(
+                detail=f"agent-only composer: could not check the {confirm!r} confirm radio"
+            ) from exc
+    return True
 
 
 def _asb_tokens(state: dict[str, Any]) -> set[str]:
@@ -341,7 +389,7 @@ class AgentOnlyComposer:
 
     async def _open_pane(self, page: Page) -> None:
         pane = page.locator(PANE)
-        if await pane.count():
+        if await pane.count() and await pane.first.is_visible():
             return
         button = page.locator(SETTINGS_BUTTON).last
         if not await button.count():
@@ -357,19 +405,24 @@ class AgentOnlyComposer:
             ) from exc
 
     async def _checked_index(self, page: Page, group: int) -> int:
-        index = (
-            await page.locator(TOGGLE_GROUP)
-            .nth(group)
-            .evaluate(
-                "g => [...g.querySelectorAll(\"button[role='radio']\")]"
-                ".findIndex(b => b.getAttribute('aria-checked') === 'true')"
-            )
+        groups = page.locator(TOGGLE_GROUP)
+        if await groups.count() <= group:
+            return -1
+        js = (
+            "g => [...g.querySelectorAll(\"button[role='radio'], mat-button-toggle, button\")]"
+            ".findIndex(b => b.getAttribute('aria-checked') === 'true' "
+            "|| b.classList.contains('mat-button-toggle-checked'))"
         )
+        index = await groups.nth(group).evaluate(js)
         return int(index)
 
     async def _check_radio(self, page: Page, group: int, radio: str | int, named: str) -> None:
         """Check one radio, by ligature (aspect) or by position (count, restore)."""
-        radios = page.locator(TOGGLE_GROUP).nth(group).locator(TOGGLE_RADIO)
+        groups = page.locator(TOGGLE_GROUP)
+        if await groups.count() <= group:
+            log.debug("agent_only.toggle_group_not_present", group=group, named=named)
+            return
+        radios = groups.nth(group).locator(TOGGLE_RADIO)
         if isinstance(radio, str):
             target = radios.filter(has=page.locator(f"mat-icon:text-is('{radio}')"))
         else:
@@ -402,12 +455,7 @@ class AgentOnlyComposer:
                 detail=f"agent-only composer: {section} model picker missing from Agent settings"
             )
 
-        def hit(text: str) -> bool:
-            if isinstance(wants, str):
-                return _picker_label(text) == wants
-            return wants.matches(text)
-
-        if hit(await picker.inner_text()):
+        if _model_hit(await picker.inner_text(), wants):
             return
         await _click(picker, f"the {section} model picker")
         items = page.locator(MENU_ITEM)
@@ -418,7 +466,7 @@ class AgentOnlyComposer:
                 detail=f"agent-only composer: the {section} model menu ({MENU_ITEM}) did not open"
             ) from exc
         offered = [t.strip() for t in await items.all_text_contents()]
-        hits = [i for i, text in enumerate(offered) if hit(text)]
+        hits = [i for i, text in enumerate(offered) if _model_hit(text, wants)]
         if len(hits) != 1:
             await page.keyboard.press("Escape")
             raise ConfigurationError(
@@ -429,10 +477,9 @@ class AgentOnlyComposer:
                 remediation_hint="Pass a --model that names one offered entry, or omit it.",
             )
         await _click(items.nth(hits[0]), f"the {section} model {offered[hits[0]]!r}")
-        # A click can report success and fire nothing; generating on the previous model
-        # would bill at the wrong tier with no error, so the picker must read back the hit.
+        await _ensure_picker_visible(page, picker)
         deadline = time.monotonic() + RADIO_SETTLE_S
-        while not hit(await picker.inner_text()):
+        while not _model_hit(await picker.inner_text(), wants):
             if time.monotonic() >= deadline:
                 raise UiSelectorDriftError(
                     detail=(
@@ -449,36 +496,84 @@ class AgentOnlyComposer:
         try:
             if await back.count():
                 await back.click(timeout=4000)
-                await page.locator(PANE).first.wait_for(
-                    state="detached", timeout=int(PANE_S * 1000)
-                )
+                await page.locator(PANE).first.wait_for(state="hidden", timeout=int(PANE_S * 1000))
         except Exception as exc:  # noqa: BLE001 - cleanup must not mask the real failure
             log.warning("migrated.agent_only.pane_discard_failed", error=str(exc)[:200])
 
     async def _save(self, page: Page) -> None:
-        try:
-            await page.locator(SAVE_BUTTON).first.click(timeout=4000)
-            await page.locator(PANE).first.wait_for(state="detached", timeout=int(PANE_S * 1000))
-        except Exception as exc:
-            raise UiSelectorDriftError(
-                detail=f"agent-only composer: Agent settings did not close on Save ({SAVE_BUTTON})"
-            ) from exc
+        save = page.locator(SAVE_BUTTON).first
+        if await save.count() and await save.is_visible():
+            try:
+                await save.click(timeout=4000)
+                await page.locator(PANE).first.wait_for(state="hidden", timeout=int(PANE_S * 1000))
+                return
+            except Exception as exc:
+                raise UiSelectorDriftError(
+                    detail=(
+                        f"agent-only composer: Agent settings did not close on Save ({SAVE_BUTTON})"
+                    )
+                ) from exc
+
+        # In flow-unified-settings-view, settings are auto-saved; close pane through back arrow
+        back = page.locator(PANE_BACK).last
+        if await back.count() and await back.is_visible():
+            try:
+                await back.click(timeout=4000)
+                await page.locator(PANE).first.wait_for(state="hidden", timeout=int(PANE_S * 1000))
+            except Exception as exc:
+                raise UiSelectorDriftError(
+                    detail=(
+                        f"agent-only composer: Agent settings did not close on Back ({PANE_BACK})"
+                    )
+                ) from exc
 
     async def _set_confirm(self, page: Page, confirm: Confirm) -> None:
         if confirm == "account":
             return
-        radio = page.locator(f"{CONFIRM_INPUT}[value='{_CONFIRM_VALUE[confirm]}']")
-        if await radio.count() != 1:
+        val = _CONFIRM_VALUE[confirm]
+        if await _set_legacy_confirm(page, confirm, val):
+            return
+
+        # Modern mat-button-toggle-group (flow-unified-settings-view)
+        toggle_group = page.locator(f"{PANE} mat-button-toggle-group").first
+        if not await toggle_group.count():
             raise UiSelectorDriftError(
-                detail=f"agent-only composer: no single {confirm!r} confirm radio in Agent settings"
+                detail=(f"agent-only composer: no confirm toggle group in Agent settings ({PANE})")
             )
-        if not await radio.is_checked():
-            try:
-                await radio.check(timeout=4000)
-            except PlaywrightError as exc:
-                raise UiSelectorDriftError(
-                    detail=f"agent-only composer: could not check the {confirm!r} confirm radio"
-                ) from exc
+
+        val_toggle = toggle_group.locator(
+            f"mat-button-toggle[value='{val}'], "
+            f"button[role='radio'][value='{val}'], [value='{val}']"
+        )
+        toggles = toggle_group.locator("mat-button-toggle, button[role='radio']")
+        target_idx = 0 if confirm == "always" else 1
+        if await val_toggle.count() == 1:
+            target = val_toggle.first
+        elif await toggles.count() >= 2:
+            target = toggles.nth(target_idx)
+        else:
+            raise UiSelectorDriftError(
+                detail=(
+                    f"agent-only composer: no single {confirm!r} confirm toggle in Agent settings"
+                )
+            )
+
+        if await _is_toggle_checked(target):
+            return
+
+        btn = target.locator("button")
+        click_target = btn.first if await btn.count() else target
+        await _click(click_target, f"the {confirm!r} confirm toggle")
+
+    async def _read_picker_model(self, page: Page, section: Section) -> str:
+        picker = page.locator(MODEL_PICKER[section]).first
+        if not await picker.count():
+            return ""
+        caption = picker.locator(".defaults-row-caption")
+        if await caption.count() and await caption.first.is_visible():
+            text = await caption.first.inner_text()
+            return text.split(",")[0].strip()
+        return _picker_label(await picker.inner_text())
 
     async def apply_defaults(
         self,
@@ -493,18 +588,25 @@ class AgentOnlyComposer:
         """Set this run's defaults, Save, and return what to restore."""
         with nothing_submitted():  # #1320: settings are bound before any submit
             await self._open_pane(page)
+            is_unified = await page.locator("flow-unified-settings-view").count() > 0
             base = _GROUP_BASE[section]
             try:
-                snapshot = DefaultsSnapshot(
-                    section=section,
-                    aspect_index=await self._checked_index(page, base),
-                    count_index=await self._checked_index(page, base + 1),
-                    model_text=_picker_label(
-                        await page.locator(MODEL_PICKER[section]).first.inner_text()
-                    ),
-                )
-                await self._check_radio(page, base, aspect_ligature, "aspect")
-                await self._check_radio(page, base + 1, count - 1, "count")
+                if is_unified:
+                    snapshot = DefaultsSnapshot(
+                        section=section,
+                        aspect_index=-1,
+                        count_index=-1,
+                        model_text=await self._read_picker_model(page, section),
+                    )
+                else:
+                    snapshot = DefaultsSnapshot(
+                        section=section,
+                        aspect_index=await self._checked_index(page, base),
+                        count_index=await self._checked_index(page, base + 1),
+                        model_text=await self._read_picker_model(page, section),
+                    )
+                    await self._check_radio(page, base, aspect_ligature, "aspect")
+                    await self._check_radio(page, base + 1, count - 1, "count")
                 if model is not None:
                     await self._choose_model(page, section, model)
                 await self._set_confirm(page, confirm)

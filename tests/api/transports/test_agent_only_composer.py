@@ -32,13 +32,22 @@ synthetic markup is not the live arm:
 No account, no network, no credits; skips when Chromium is absent.
 """
 
+# ruff: noqa: E501 - fixtures include inline HTML/JS
+
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from gflow_cli.api.transports.migrated_composer import MigratedComposer
+from gflow_cli.api import image as image_api
+from gflow_cli.api import video as video_api
+from gflow_cli.api.transports import agent_only_composer as aoc
+from gflow_cli.api.transports.migrated_composer import (
+    IMAGE_MODEL_MENU_MATCHERS,
+    VIDEO_MODEL_MENU_MATCHERS,
+    MigratedComposer,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from playwright.async_api import Page
@@ -185,3 +194,166 @@ async def test_no_agent_anchor_is_not_agent_only(page: Page) -> None:
     """The verdict needs one presence: the agent composer's anchor element."""
     without_anchor = AGENT_ONLY.replace("flow-creative-agent-prompt-box", "flow-prompt-box")
     assert await _verdict(page, without_anchor) is False
+
+
+# --- flow-unified-settings-view: live DOM (21 Nov 2026) regression tests -----------------
+
+UNIFIED_SETTINGS_FIXTURE = """
+<flow-creative-agent-prompt-box>
+  <button class="settings-trigger" id="tune"><mat-icon>settings_2</mat-icon></button>
+</flow-creative-agent-prompt-box>
+<div id="panel-container"></div>
+<script>
+window.settingsState = {
+  confirm: "1",
+  videoModel: "Veo 3.1 - Lite",
+  imageModel: "Nano Banana 2.1",
+  closedCount: 0,
+};
+function renderUnifiedPane() {
+  const c = document.getElementById('panel-container');
+  c.innerHTML = `
+    <flow-agent-panel>
+      <div class="agent-panel-header">
+        <button class="header-action" aria-label="Kembali"><mat-icon>arrow_back</mat-icon></button>
+        <h2 class="header-title">Setelan agen</h2>
+      </div>
+      <div class="agent-panel-content">
+        <flow-unified-settings-view>
+          <p class="settings-disclaimer">Setelan untuk agen dalam project ini.</p>
+          <div class="settings-section">
+            <mat-button-toggle-group>
+              <mat-button-toggle value="1" class="${window.settingsState.confirm === '1' ? 'mat-button-toggle-checked' : ''}">
+                <button class="mat-button-toggle-button" aria-checked="${window.settingsState.confirm === '1'}">Selalu</button>
+              </mat-button-toggle>
+              <mat-button-toggle value="2" class="${window.settingsState.confirm === '2' ? 'mat-button-toggle-checked' : ''}">
+                <button class="mat-button-toggle-button" aria-checked="${window.settingsState.confirm === '2'}">Jangan pernah</button>
+              </mat-button-toggle>
+            </mat-button-toggle-group>
+          </div>
+          <div class="settings-section">
+            <button class="defaults-row" id="row-video">
+              <span class="defaults-row-content">
+                <mat-icon>videocam</mat-icon>
+                <span class="defaults-row-text">
+                  <span class="defaults-row-title">Default video</span>
+                  <span class="defaults-row-caption">${window.settingsState.videoModel}, 16:9, 1 output</span>
+                </span>
+              </span>
+              <mat-icon>arrow_forward</mat-icon>
+            </button>
+            <button class="defaults-row" id="row-image">
+              <span class="defaults-row-content">
+                <mat-icon>image</mat-icon>
+                <span class="defaults-row-text">
+                  <span class="defaults-row-title">Default gambar</span>
+                  <span class="defaults-row-caption">🍌 ${window.settingsState.imageModel}, 16:9, 2 output</span>
+                </span>
+              </span>
+              <mat-icon>arrow_forward</mat-icon>
+            </button>
+          </div>
+          <div class="settings-section">Memori</div>
+        </flow-unified-settings-view>
+      </div>
+    </flow-agent-panel>
+  `;
+  c.querySelectorAll('mat-button-toggle').forEach(t => {
+    t.onclick = () => {
+      const v = t.getAttribute('value');
+      window.settingsState.confirm = v;
+      renderUnifiedPane();
+    };
+  });
+  const setupRow = (id, kind, options) => {
+    const btn = c.querySelector(id);
+    btn.onclick = () => {
+      const menu = document.createElement('div');
+      menu.className = 'cdk-overlay-pane';
+      menu.innerHTML = options.map(opt => `<button role="menuitem">${opt}</button>`).join('');
+      menu.querySelectorAll('[role=menuitem]').forEach(item => {
+        item.onclick = () => {
+          if (kind === 'video') window.settingsState.videoModel = item.textContent;
+          else window.settingsState.imageModel = item.textContent;
+          menu.remove();
+          renderUnifiedPane();
+        };
+      });
+      document.body.appendChild(menu);
+    };
+  };
+  setupRow('#row-video', 'video', ['Veo 3.1 - Lite', 'Veo 3.1 - Fast', 'Veo 3.1 - Quality']);
+  setupRow('#row-image', 'image', ['Nano Banana 2.1', 'Nano Banana Pro', 'Imagen 3.5']);
+  c.querySelector('button.header-action').onclick = () => {
+    window.settingsState.closedCount++;
+    c.innerHTML = '';
+  };
+}
+document.getElementById('tune').onclick = renderUnifiedPane;
+</script>
+"""
+
+
+@pytest.mark.asyncio
+async def test_unified_settings_view_video_defaults_apply_and_restore(page: Page) -> None:
+    """Verifies that AgentOnlyComposer interacts seamlessly with flow-unified-settings-view:
+    - Opens settings through settings_2 button
+    - Reads model from defaults-row with videocam icon
+    - Changes confirmation in mat-button-toggle-group
+    - Selects new model from role=menuitem
+    - Auto-saves and closes via back arrow button
+    - Restores previous model on restore_defaults
+    """
+    await page.set_content(UNIFIED_SETTINGS_FIXTURE)
+    composer = aoc.AgentOnlyComposer()
+
+    snap = await composer.apply_defaults(
+        page,
+        section="video",
+        aspect_ligature="crop_16_9",
+        count=1,
+        model=VIDEO_MODEL_MENU_MATCHERS[video_api.VideoModel.VEO_3_1_FAST],
+        confirm="never",
+    )
+
+    assert snap.section == "video"
+    assert snap.model_text == "Veo 3.1 - Lite"
+
+    state: dict[str, Any] = await page.evaluate("window.settingsState")
+    assert state["confirm"] == "2"  # "never" mapped to value 2
+    assert state["videoModel"] == "Veo 3.1 - Fast"
+    assert state["closedCount"] == 1
+    assert await page.locator(aoc.PANE).count() == 0
+
+    await composer.restore_defaults(page, snap)
+
+    restored_state: dict[str, Any] = await page.evaluate("window.settingsState")
+    assert restored_state["videoModel"] == "Veo 3.1 - Lite"
+    assert restored_state["confirm"] == "2"  # Standing choice, not reverted
+    assert restored_state["closedCount"] == 2
+    assert await page.locator(aoc.PANE).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_unified_settings_view_image_defaults_apply(page: Page) -> None:
+    """Verifies image defaults row with image icon is targeted in flow-unified-settings-view."""
+    await page.set_content(UNIFIED_SETTINGS_FIXTURE)
+    composer = aoc.AgentOnlyComposer()
+
+    snap = await composer.apply_defaults(
+        page,
+        section="image",
+        aspect_ligature="crop_16_9",
+        count=2,
+        model=IMAGE_MODEL_MENU_MATCHERS[image_api.Model.GEM_PIX_2],  # "Nano Banana Pro"
+        confirm="always",
+    )
+
+    assert snap.section == "image"
+    assert "Nano Banana 2.1" in snap.model_text
+
+    state: dict[str, Any] = await page.evaluate("window.settingsState")
+    assert state["confirm"] == "1"  # "always" mapped to value 1
+    assert state["imageModel"] == "Nano Banana Pro"
+    assert state["closedCount"] == 1
+    assert await page.locator(aoc.PANE).count() == 0
