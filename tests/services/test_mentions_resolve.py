@@ -367,14 +367,12 @@ def test_media_still_resolves_when_only_characters_are_unavailable() -> None:
     ]
 
 
-def test_video_never_resolves_a_character_by_name() -> None:
-    # The migrated VIDEO driver does not attach by name: an id-less entity there would
-    # be dropped from a billed generation, so the fallback is image-only.
+def test_video_resolves_a_character_by_name_when_catalog_unavailable() -> None:
     index = AssetIndex(characters_unavailable=True)
-    with pytest.raises(ConfigurationError, match="Unknown mention"):
-        resolve_mentions(
-            parse_mentions("@Sussy runs"), index, path="video", model="", prompt="@Sussy runs"
-        )
+    prompt = "@Sussy runs"
+    res = resolve_mentions(parse_mentions(prompt), index, path="video", model="", prompt=prompt)
+    assert [(m.name, m.kind, m.id) for m in res.mentions] == [("Sussy", "entity", "")]
+    assert res.de_tagged_prompt == "Sussy runs"
 
 
 async def test_resolve_and_apply_names_the_character_without_an_id_on_images(
@@ -397,7 +395,7 @@ async def test_resolve_and_apply_names_the_character_without_an_id_on_images(
     assert out.prompt == "Sussy cocinando"
 
 
-async def test_resolve_and_apply_still_fails_closed_on_video(
+async def test_resolve_and_apply_names_the_character_without_an_id_on_video(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from gflow_cli.api.video import GenerateVideoRequest
@@ -405,14 +403,16 @@ async def test_resolve_and_apply_still_fails_closed_on_video(
 
     monkeypatch.setattr("gflow_cli.data.queries.list_project_media_assets", lambda **_: [])
     req = GenerateVideoRequest(prompt="@Sussy runs")
-    with pytest.raises(MentionIndexUnavailableError, match="character"):
-        await resolve_and_apply(
-            _FailingCharacterClient(),  # type: ignore[arg-type]
-            req,
-            path="video",
-            project_id="proj-1",
-            tool_specs=(),
-        )
+    out = await resolve_and_apply(
+        _FailingCharacterClient(),  # type: ignore[arg-type]
+        req,
+        path="video",
+        project_id="proj-1",
+        tool_specs=(),
+    )
+    assert out.reference_entities == ()
+    assert out.reference_entity_names == ("Sussy",)
+    assert out.prompt == "Sussy runs"
 
 
 async def test_resolve_and_apply_keeps_a_passed_character_single(
@@ -490,13 +490,15 @@ async def test_resolve_and_apply_on_flow_google_com_keeps_character_catalog_unav
         assert img_out.reference_entity_names == ("Sussy",)
         assert img_out.prompt == "Sussy cocinando"
 
-        with pytest.raises(MentionIndexUnavailableError, match="character"):
-            await resolve_and_apply(
-                client,
-                GenerateVideoRequest(prompt="@Sussy runs"),
-                path="video",
-                project_id="proj-1",
-                tool_specs=(),
-            )
+        video_out = await resolve_and_apply(
+            client,
+            GenerateVideoRequest(prompt="@Sussy runs"),
+            path="video",
+            project_id="proj-1",
+            tool_specs=(),
+        )
+        assert video_out.reference_entities == ()
+        assert video_out.reference_entity_names == ("Sussy",)
+        assert video_out.prompt == "Sussy runs"
 
         migrated_read.assert_not_awaited()

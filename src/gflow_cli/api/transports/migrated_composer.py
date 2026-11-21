@@ -428,7 +428,7 @@ async def run_video(
             end_media_id = await composer.attach_end_frame(page, pid, request.end_image)
         if request.mode is Mode.R2V and request.reference_images:
             reference_ids = await composer.attach_references(page, pid, request.reference_images)
-        if request.reference_entities:
+        if request.reference_entities or request.reference_entity_names:
             # #723: characters attach through the SAME `@` picker as media, so they go on
             # after any uploads (whose file chooser steals keyboard focus) and must not clear
             # mentions those uploads already placed.
@@ -440,11 +440,15 @@ async def run_video(
             )
         # The prompt is appended whenever mentions are already in the document: clicking the
         # composer would move the caret away from where the last one left it.
-        has_mentions = bool(request.reference_entities) or request.mode is Mode.R2V
+        has_mentions = (
+            bool(request.reference_entities or request.reference_entity_names)
+            or request.mode is Mode.R2V
+        )
         await composer.send_prompt(page, request.prompt, append=has_mentions)
         if request.mode is Mode.R2V:
             attached = await composer.read_chips(page)
-            n_images, n_chars = len(request.reference_images), len(request.reference_entities)
+            n_images = len(request.reference_images)
+            n_chars = max(len(request.reference_entities), len(request.reference_entity_names))
             if len(attached) != n_images + n_chars:
                 raise ReferenceNotFoundError(
                     detail=(
@@ -463,7 +467,7 @@ async def run_video(
         expect_end_media_id=end_media_id,
         # The committed entity ids ride the MZZa6b body beside the media ids (route-abort
         # capture, 2026-10-27), so a character-only run is guarded too.
-        expect_reference_ids=reference_ids + entity_ids,
+        expect_reference_ids=reference_ids + tuple(e for e in entity_ids if e),
         # Only ids uploaded by THIS run identify its clip after a lost reply (#1112);
         # a character's entity id repeats in every clip that cast it.
         adopt_ids=tuple(i for i in (media_id, end_media_id) if i) + reference_ids,

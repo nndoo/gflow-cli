@@ -465,12 +465,22 @@ class GenerateVideoRequest:
         ):
             msg = "I2V request requires start_image, start_image_ref_name, or start_image_ref_id"
             raise ValueError(msg)
-        if self.reference_images or self.ref_names or self.reference_entities:
+        if (
+            self.reference_images
+            or self.ref_names
+            or self.reference_entities
+            or self.reference_entity_names
+        ):
             msg = "I2V request must not carry reference_images, ref_names, or reference_entities"
             raise ValueError(msg)
 
     def _validate_r2v_symmetry(self) -> None:
-        if not self.reference_images and not self.ref_names and not self.reference_entities:
+        if not (
+            self.reference_images
+            or self.ref_names
+            or self.reference_entities
+            or self.reference_entity_names
+        ):
             msg = "R2V request requires reference_images, ref_names, or reference_entities"
             raise ValueError(msg)
         if self._has_frame_input():
@@ -509,7 +519,9 @@ class GenerateVideoRequest:
                 raise ValueError(
                     msg,
                 )
-            total_refs = total_img_refs + len(self.reference_entities)
+            total_refs = total_img_refs + max(
+                len(self.reference_entities), len(self.reference_entity_names)
+            )
             if total_refs > cap:
                 msg = (
                     f"reference cap exceeded: {total_refs} refs (images+entities) "

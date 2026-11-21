@@ -106,7 +106,7 @@ class AssetIndex:
         instead of silently degrading to an empty index, which would make an
         outage indistinguishable from "no matching asset".
 
-        ``characters_optional`` (image path, #723) is the one exception: on an account
+        ``characters_optional`` (image and video paths, #723) is the one exception: on an account
         Flow serves from flow.google.com the character catalog is read through a labs
         route that answers 401, while the composer's ``@`` picker still offers the
         character. There the index is built without characters and marked
@@ -271,7 +271,7 @@ def resolve_mentions(
                     )
                 matched_entry = media_matched[0]
 
-        if matched_entry is None and index.characters_unavailable and path == "image":
+        if matched_entry is None and index.characters_unavailable and path in ("image", "video"):
             # #723: no catalog to find the name's end in, so the name is the first
             # whitespace-delimited word. A multi-word character name needs the catalog.
             words = cand.split(maxsplit=1)
@@ -427,8 +427,9 @@ async def resolve_and_apply(
             )
 
         is_image = path == "image"
-        # Video keeps failing closed: its migrated driver does not attach by name.
-        index = await AssetIndex.build_for_project(client, project_id, characters_optional=is_image)
+        # Video now also tolerates character catalog outages / 401 by resolving
+        # mentions by name and verifying chip kind in the browser (#723).
+        index = await AssetIndex.build_for_project(client, project_id, characters_optional=True)
 
         existing_refs = list(r.reference_entities)
         current_refs: list[Any] = list(r.refs) if is_image else []

@@ -58,6 +58,23 @@ async def test_video_path_appends_entity_only(patch_index: None) -> None:
     out = await resolve_and_apply(None, req, path="video", project_id="proj-1", tool_specs=())
     assert out.prompt == "A Zoro walks"
     assert out.reference_entities == ("e1-uuid-12345678901234567890123456",)
+    assert out.reference_entity_names == ("Zoro",)
+
+
+async def test_video_path_falls_back_to_name_when_characters_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    index = AssetIndex(entities=[], media_assets=[], characters_unavailable=True)
+
+    async def _fake_build(cls: Any, client: Any, project_id: str, **_: Any) -> AssetIndex:
+        return index
+
+    monkeypatch.setattr(mentions.AssetIndex, "build_for_project", classmethod(_fake_build))
+    req = GenerateVideoRequest(prompt="A @Zoro walks", model=VideoModel.VEO_3_1_FAST)
+    out = await resolve_and_apply(None, req, path="video", project_id="proj-1", tool_specs=())
+    assert out.prompt == "A Zoro walks"
+    assert out.reference_entities == ()
+    assert out.reference_entity_names == ("Zoro",)
 
 
 async def test_missing_project_raises_when_mentions_present(patch_index: None) -> None:

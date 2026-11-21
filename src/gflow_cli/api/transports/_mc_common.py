@@ -489,6 +489,11 @@ IMAGE_MODEL_WIRE_TOKENS: dict[ImageModel, tuple[str, ...]] = {
 }
 
 
+def _has_character_references(request: GenerateVideoRequest) -> bool:
+    """Whether *request* binds Flow CHARACTER entities by id or by name (#723)."""
+    return bool(request.reference_entities or request.reference_entity_names)
+
+
 def _unported_form(request: GenerateVideoRequest) -> str | None:
     """The noun for what this request asks of the new host that slice 1 does not
     drive, or ``None`` when the composer takes it. i2v is ported for **local**
@@ -529,7 +534,7 @@ def _unported_form(request: GenerateVideoRequest) -> str | None:
         # display name and exposes no media id, so a reference gflow did not upload
         # itself has nothing to anchor on. Character entities are the exception above:
         # they are addressed by name on purpose, and verified by entity id after the fact.
-        if not request.reference_images and not request.reference_entities:
+        if not request.reference_images and not _has_character_references(request):
             return "references given by name rather than a local file"
         return None
     if request.mode is not Mode.I2V:  # pragma: no cover - a fourth Mode would land here

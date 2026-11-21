@@ -33,6 +33,7 @@ from gflow_cli.api.transports._mc_common import (
     _count,
     _duration,
     _exact,
+    _has_character_references,
     _ligature,
     _select_resolution,
     _visible_model_picker,
@@ -67,7 +68,7 @@ class SettingsPaneMixin(EditorGateMixin):
                 # Frames renders the Start/End chips the attach stage binds to. Flow
                 # remembers the last submode per account, so it is set, not assumed.
                 await self._select(page, pane, axis="submode", lig=FRAMES_LIGATURE)
-            if request.mode is Mode.R2V or request.reference_entities:
+            if request.mode is Mode.R2V or _has_character_references(request):
                 # Ingredients is where references live, and the app derives the r2v model
                 # key from this plus the picker choice — the same run sends
                 # veo_3_1_r2v_lite_low_priority here and veo_3_1_lite_low_priority under

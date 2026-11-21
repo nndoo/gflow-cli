@@ -552,6 +552,7 @@ def test_named_character_references_are_served_on_r2v() -> None:
         _unported_form(_r2v(reference_entities=("ent-kael",), reference_entity_names=("Kael",)))
         is None
     )
+    assert _unported_form(_r2v(reference_entities=(), reference_entity_names=("Kael",))) is None
     assert (
         _unported_form(_r2v(reference_entities=("ent-kael",)))
         == "a character given by entity id without a name"
@@ -597,17 +598,43 @@ async def test_the_chip_count_refusal_states_the_numbers_it_compared(
     assert "1 image reference(s) + 1 character(s) = 2 chip(s) requested" in detail
     assert "1 on the prompt" in detail
 
+    by_name_request = _r2v(
+        reference_images=(),
+        reference_entities=(),
+        reference_entity_names=("Kael",),
+    )
+    composer.read_chips = AsyncMock(return_value=[])
+    with pytest.raises(ReferenceNotFoundError) as exc_info:
+        await mc.run_video(
+            MagicMock(url="about:blank"),
+            by_name_request,
+            project_id="p1",
+            save=MagicMock(),
+            poll_timeout_s=1.0,
+            download=False,
+            on_started=None,
+        )
+    detail = str(exc_info.value.detail)
+    assert "0 image reference(s) + 1 character(s) = 1 chip(s) requested" in detail
+    assert "0 on the prompt" in detail
+
 
 @pytest.mark.parametrize(
-    ("images", "uploaded", "expected"),
-    [((Path("a.png"),), ("m1",), ("m1", "ent-kael")), ((), (), ("ent-kael",))],
-    ids=["with-image", "character-only"],
+    ("images", "uploaded", "expected", "entities", "names"),
+    [
+        ((Path("a.png"),), ("m1",), ("m1", "ent-kael"), ("ent-kael",), ("Kael",)),
+        ((), (), ("ent-kael",), ("ent-kael",), ("Kael",)),
+        ((), (), ("ent-kael",), (), ("Kael",)),
+    ],
+    ids=["with-image", "character-only", "character-by-name-only"],
 )
 async def test_the_submit_body_must_carry_the_committed_characters(
     monkeypatch: pytest.MonkeyPatch,
     images: tuple[Path, ...],
     uploaded: tuple[str, ...],
     expected: tuple[str, ...],
+    entities: tuple[str, ...],
+    names: tuple[str, ...],
 ) -> None:
     """#723: the body guard checked only uploaded image ids, so a character-only r2v had
     no body guard at all. The entity id rides the MZZa6b body (route-abort, 2026-10-27:
@@ -637,8 +664,8 @@ async def test_the_submit_body_must_carry_the_committed_characters(
 
     request = _r2v(
         reference_images=images,
-        reference_entities=("ent-kael",),
-        reference_entity_names=("Kael",),
+        reference_entities=entities,
+        reference_entity_names=names,
     )
     await mc.run_video(
         MagicMock(url="about:blank"),
