@@ -48,8 +48,14 @@ from playwright.async_api import Error as PlaywrightError
 from gflow_cli.api.dto import GeneratedImage
 from gflow_cli.api.image import Aspect as ImageAspect
 from gflow_cli.api.transports._mc_common import (
+    _OPTION_TITLES_JS,  # pyright: ignore[reportPrivateUsage]
+    ARROW_SETTLE_MS,
+    ARROW_STEP_MS,
+    FRAME_SEARCH_ATTEMPTS,
+    FRAME_SEARCH_RETRY_PAUSE_S,
     LISTING_READ_BUDGET_S,
     LISTING_RPC,
+    PICKER_OPTION,
     PROMPT_MATCH_MARGIN_S,
 )
 from gflow_cli.api.transports._mc_submit_observe import read_project_listing
@@ -62,11 +68,13 @@ from gflow_cli.api.transports.migrated_composer import (
     ModelMenuMatcher,
     _raise_if_out_of_credits,  # pyright: ignore[reportPrivateUsage]
 )
+from gflow_cli.api.transports.migrated_existing_refs import require_appended
 from gflow_cli.api.video import Aspect, Mode, VideoModel, VideoResult, VideoStarted, VideoStatus
 from gflow_cli.errors import (
     ConfigurationError,
     FlowAgentUiError,
     FlowHostMigratedError,
+    ReferenceNotFoundError,
     TransportTimeoutError,
     UiSelectorDriftError,
     WireFormatError,
@@ -218,6 +226,15 @@ _IMAGE_ASPECT_LABEL = {
     ImageAspect.PORTRAIT_THREE_FOUR: "3:4",
 }
 _VIDEO_ASPECT_LABEL = {Aspect.PORTRAIT: "9:16", Aspect.LANDSCAPE: "16:9"}
+
+#: Collapse selection to the END of the agent prompt editor (#723, #997).
+_AGENT_CARET_TO_END_JS = (
+    "(sel) => { const all = document.querySelectorAll(sel);"
+    " const ce = all.length ? all[all.length - 1] : null; if (!ce) return;"
+    " ce.focus(); const r = document.createRange(); r.selectNodeContents(ce);"
+    " r.collapse(false); const s = window.getSelection();"
+    " s.removeAllRanges(); s.addRange(r); }"
+)
 
 
 @dataclass(frozen=True)
@@ -828,7 +845,183 @@ class AgentOnlyComposer:
         head = _tile_key(state0["finished"][0]) if state0["finished"] else None
         return set(_video_uuids(state0)) | _asb_tokens(state0), head
 
-    async def _submit(self, page: Page, directive: str) -> None:
+    async def read_chips(self, page: Page) -> list[dict[str, str]]:
+        """Every mention now in the prompt, with the kind that decides its wire slot."""
+        return await page.evaluate(
+            "(sel) => { const all = document.querySelectorAll(sel);"
+            " const ce = all.length ? all[all.length - 1] : document;"
+            " return [...ce.querySelectorAll('.mention-chip')].map(c => ({"
+            "  text: (c.textContent || '').trim(),"
+            "  entity_id: c.getAttribute('data-entity-id') || '',"
+            "  reference_type: c.getAttribute('data-reference-type') || '',"
+            " })); }",
+            EDITOR,
+        )
+
+    async def _caret_to_end(self, page: Page) -> list[dict[str, str]]:
+        """Focus the editor with the caret at its END; return the chips already there."""
+        editor = page.locator(EDITOR).last
+        if not await editor.count():
+            raise UiSelectorDriftError(detail=f"agent-only composer: editor ({EDITOR}) missing")
+        await _click(editor, "the editor", timeout_ms=5000)
+        await page.evaluate(_AGENT_CARET_TO_END_JS, EDITOR)
+        return await self.read_chips(page)
+
+    async def _require_chips_kept(self, page: Page, before: int, name: str) -> list[dict[str, str]]:
+        """The chips after a failed query was cleared; refuse if one already attached is gone."""
+        chips = await self.read_chips(page)
+        if len(chips) < before:
+            raise ReferenceNotFoundError(
+                detail=(
+                    f"migrated host: clearing the failed {name!r} query removed an "
+                    f"already-attached reference ({before} chip(s) before, "
+                    f"{len(chips)} after) — the prompt is no longer the one that was "
+                    "built, so this run is abandoned rather than submitted"
+                ),
+                remediation_hint=(
+                    "Nothing was submitted. The composer dropped a reference while a "
+                    "mention was retried; re-run the command"
+                ),
+            )
+        return chips
+
+    async def _mention_character(self, page: Page, name: str, *, expect_chips: int) -> None:
+        """Commit the picker option TITLED exactly *name* — one gesture, nothing on trial."""
+        titles: list[str] = []
+        before: list[dict[str, str]] = []
+        for attempt in range(1, FRAME_SEARCH_ATTEMPTS + 1):
+            before = await self._caret_to_end(page)
+            await page.keyboard.type("@", delay=120)
+            await page.wait_for_timeout(2200)
+            await page.keyboard.type(name, delay=100)
+            await page.wait_for_timeout(2500)
+            titles = [str(t) for t in await page.evaluate(_OPTION_TITLES_JS, PICKER_OPTION)]
+            if titles or attempt == FRAME_SEARCH_ATTEMPTS:
+                break
+            log.info(
+                "migrated.agent_only.mention_miss",
+                name_chars=len(name),
+                attempt=attempt,
+                offered=0,
+            )
+            for _ in range(len(name) + 1):
+                await page.keyboard.press("Backspace")
+            await page.keyboard.press("Escape")
+            await self._require_chips_kept(page, len(before), name)
+            await page.wait_for_timeout(FRAME_SEARCH_RETRY_PAUSE_S * 1000)
+        exact = [i for i, t in enumerate(titles) if t.strip().casefold() == name.casefold()]
+        offered = f"{len(titles)} option(s)"
+        if len(exact) != 1:
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(800)
+            why = (
+                "no option is titled exactly that"
+                if not exact
+                else f"{len(exact)} options are titled exactly that, and a character and a "
+                "media asset cannot be told apart before one is committed"
+            )
+            raise ReferenceNotFoundError(
+                detail=(
+                    f"migrated host: asked for character {name!r} but {why}; the picker "
+                    f"offered {offered}. Refusing before submit"
+                ),
+                remediation_hint=(
+                    "Nothing was submitted. No picker option carried that name: check the "
+                    "project's characters with `gflow character list --project <id>` (MCP: "
+                    "gflow_character_list)"
+                    if not exact
+                    else "Nothing was submitted. Rename the colliding asset in Flow, or give "
+                    "the character a unique one-word name"
+                ),
+            )
+        index = exact[0]
+        for _ in range(index):
+            await page.keyboard.press("ArrowDown")
+            await page.wait_for_timeout(ARROW_STEP_MS)
+        if index:
+            await page.wait_for_timeout(ARROW_SETTLE_MS)
+        await page.keyboard.press("Enter")
+        await page.wait_for_timeout(2500)
+        chips = await self.read_chips(page)
+        log.info("migrated.agent_only.character_option", option_index=index, offered=len(titles))
+        if len(chips) != expect_chips:
+            raise ReferenceNotFoundError(
+                detail=(
+                    f"migrated host: committing the option titled {name!r} committed no chip "
+                    f"({len(chips)} chip(s), expected {expect_chips}); the picker offered "
+                    f"{offered}"
+                ),
+            )
+        require_appended(before, chips)
+
+    async def attach_character_entities(
+        self,
+        page: Page,
+        *,
+        names: tuple[str, ...],
+        entity_ids: tuple[str, ...] = (),
+        clear: bool = True,
+    ) -> tuple[str, ...]:
+        """Mention each character by name, then prove the chip is that ENTITY (#723)."""
+        if clear:
+            editor = page.locator(EDITOR).last
+            if not await editor.count():
+                raise UiSelectorDriftError(detail=f"agent-only composer: editor ({EDITOR}) missing")
+            await _click(editor, "the editor", timeout_ms=5000)
+            await page.keyboard.press("ControlOrMeta+a")
+            await page.keyboard.press("Delete")
+            await page.wait_for_timeout(600)
+        base = len(await self.read_chips(page))
+        for i, name in enumerate(names):
+            await self._mention_character(page, name, expect_chips=base + i + 1)
+
+        chips = (await self.read_chips(page))[base:]
+        not_entities = [c for c in chips if c.get("reference_type") != "entity"]
+        if not_entities:
+            got = ", ".join(f"{c.get('text')!r} ({c.get('reference_type')})" for c in not_entities)
+            raise ReferenceNotFoundError(
+                detail=(
+                    f"migrated host: asked for character(s) {', '.join(names)} but the "
+                    f"picker committed {got}. Flow offers characters and media under one "
+                    f"search and does not rank them, so a file sharing the name can win. "
+                    f"Refusing to spend credits on a generation that would carry the wrong "
+                    f"reference"
+                ),
+            )
+        got_names = sorted(str(c.get("text", "")).casefold() for c in chips)
+        if got_names != sorted(n.casefold() for n in names):
+            raise ReferenceNotFoundError(
+                detail=(
+                    f"migrated host: asked for {len(names)} character(s) by name but the "
+                    "committed chips carry different names. Refusing to submit"
+                ),
+            )
+        attached = {c.get("entity_id", "") for c in chips}
+        missing = [e for e in entity_ids if e not in attached]
+        if missing:
+            raise ReferenceNotFoundError(
+                detail=(
+                    f"migrated host: the prompt carries entity chips {sorted(attached)} but "
+                    f"{missing} was requested — a chip of the right kind is not proof it is "
+                    f"the right character. Refusing to submit"
+                ),
+            )
+        committed = tuple(c.get("entity_id", "") for c in chips)
+        log.info(
+            "migrated.agent_only.character_entities_attached",
+            count=len(chips),
+            names=list(names),
+            entity_ids=list(committed),
+        )
+        return committed
+
+    async def _submit(
+        self,
+        page: Page,
+        directive: str,
+        *,
+        reference_entity_names: tuple[str, ...] = (),
+    ) -> None:
         with nothing_submitted():  # #1320: the click below is the first send
             editor = page.locator(EDITOR).last
             if not await editor.count():
@@ -836,7 +1029,14 @@ class AgentOnlyComposer:
             await _click(editor, "the editor", timeout_ms=5000)
             await page.keyboard.press("ControlOrMeta+a")
             await page.keyboard.press("Delete")
-            await page.keyboard.insert_text(directive)
+            if reference_entity_names:
+                await self.attach_character_entities(
+                    page, names=reference_entity_names, clear=False
+                )
+                await page.evaluate(_AGENT_CARET_TO_END_JS, EDITOR)
+                await page.keyboard.insert_text(f" {directive}")
+            else:
+                await page.keyboard.insert_text(directive)
             submit = page.locator(SUBMIT).last
             if not await submit.count():
                 await _raise_if_out_of_credits(page)
@@ -853,6 +1053,7 @@ class AgentOnlyComposer:
         budget_s: float,
         on_first_media: Callable[[str], object] | None = None,
         read_listing: ListingReader | None = None,
+        reference_entity_names: tuple[str, ...] = (),
     ) -> list[TileMedia]:
         """Submit ``directive`` and return the ``count`` new results it produced.
 
@@ -864,7 +1065,7 @@ class AgentOnlyComposer:
         else:
             baseline, baseline_head = await self._any_uuids(page), None
         submitted_at = time.time()
-        await self._submit(page, directive)
+        await self._submit(page, directive, reference_entity_names=reference_entity_names)
         log.info("migrated.agent_only.submitted", kind=kind, count=count)
         run = _Run(kind, budget_s, time.monotonic() + budget_s, baseline_gates, count, submitted_at)
         run.seen_before = frozenset(baseline)
@@ -1116,7 +1317,7 @@ def unported_image(request: GenerateImageRequest) -> str | None:
 def unported_video(request: GenerateVideoRequest) -> str | None:
     if request.mode is not Mode.T2V:
         return f"{request.mode.value}"
-    if request.reference_entities or request.reference_entity_names:
+    if request.reference_entities:
         return "character references"
     if request.count != 1:
         return "more than one video per request"
@@ -1340,6 +1541,7 @@ async def run_agent_video(
             budget_s=poll_timeout_s,
             on_first_media=started,
             read_listing=lambda budget_s: read_project_listing(page, project_id, budget_s=budget_s),
+            reference_entity_names=request.reference_entity_names,
         )
     finally:
         await _restore_quietly(composer, page, snapshot)

@@ -33,6 +33,7 @@ from gflow_cli.api.transports.migrated_composer import (
 from gflow_cli.errors import (
     FlowAgentUiError,
     FlowHostMigratedError,
+    ReferenceNotFoundError,
     TransportTimeoutError,
     UiSelectorDriftError,
     is_retryable,
@@ -1185,7 +1186,6 @@ async def test_unported_image_forms_are_refused(request_: Any) -> None:
         {"count": 2},
         {"aspect": video_api.Aspect.SQUARE},
         {"reference_entities": ("e1",)},
-        {"reference_entity_names": ("Ada",)},
         # The agent pane has no resolution control: driving on would silently drop it.
         {"resolution": "720p"},
         # Load-bearing: Omni 1.2 IS in the menu matchers (they are built from the labels),
@@ -1216,8 +1216,8 @@ async def test_unported_video_forms_are_refused(changes: dict[str, Any]) -> None
 async def test_a_names_only_character_routed_to_the_agent_composer_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The classic composer attaches a named character; the agent-only one cannot, so a
-    request it is routed to refuses (exit 36) rather than billing without the character."""
+    """The classic composer attaches a named character; the agent-only image composer cannot,
+    so an image request routed to it refuses (exit 36) rather than billing without the character."""
     from gflow_cli.api.transports import migrated_composer as mc
 
     async def agent_only(*_: Any, **__: Any) -> str:
@@ -1235,18 +1235,273 @@ async def test_a_names_only_character_routed_to_the_agent_composer_is_refused(
             project_id="p1",
         )
     assert page.reload.await_count == mc.AGENT_ONLY_RELOADS
-    with pytest.raises(FlowHostMigratedError, match="character"):
-        await mc.run_video(
-            page,
-            video_api.GenerateVideoRequest(prompt="x", reference_entity_names=("Ada",)),
-            project_id="p1",
-            save=AsyncMock(),
-            poll_timeout_s=5,
-            download=False,
-            on_started=None,
-        )
-    assert page.reload.await_count == 2 * mc.AGENT_ONLY_RELOADS  # the video gate reloads too
     page.locator.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_names_only_character_video_routed_to_agent_composer_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The agent-only composer supports by-name character mentions for video: it routes
+    directly to run_agent_video without reloading."""
+    from gflow_cli.api.transports import migrated_composer as mc
+
+    async def agent_only(*_: Any, **__: Any) -> str:
+        return "agent_only"
+
+    async def fake_video(*_: Any, **kw: Any) -> str:
+        return f"video:{kw['project_id']}"
+
+    from gflow_cli.api.transports import _mc_editor_gate
+
+    monkeypatch.setattr(mc.MigratedComposer, "ensure_editor", agent_only)
+    monkeypatch.setattr(_mc_editor_gate, "AGENT_ONLY_RELOAD_WAIT_S", 0)
+    monkeypatch.setattr(aoc, "run_agent_video", fake_video)
+    page = MagicMock(url="https://flow.google.com/project/p1", reload=AsyncMock())
+
+    result = await mc.run_video(
+        page,
+        video_api.GenerateVideoRequest(prompt="x", reference_entity_names=("Ada",)),
+        project_id="p1",
+        save=AsyncMock(),
+        poll_timeout_s=5,
+        download=False,
+        on_started=None,
+    )
+    assert result == "video:p1"
+    page.reload.assert_not_called()
+
+
+# --- character mentions in agent-only composer (#723) --------------------------------------
+
+
+class FakeAgentOnlyLoc:
+    def __init__(self, page: Any, kind: str, items: list[Any]) -> None:
+        self.page = page
+        self.kind = kind
+        self.items = items
+
+    @property
+    def first(self) -> FakeAgentOnlyLoc:
+        return FakeAgentOnlyLoc(self.page, self.kind, self.items[:1])
+
+    @property
+    def last(self) -> FakeAgentOnlyLoc:
+        return FakeAgentOnlyLoc(self.page, self.kind, self.items[-1:] if self.items else [])
+
+    async def count(self) -> int:
+        return len(self.items)
+
+    async def click(self, **_: Any) -> None:
+        if self.kind == "editor":
+            self.page.editor_clicks += 1
+        elif self.kind == "submit":
+            self.page.submit_clicks += 1
+            if self.page.on_submit:
+                self.page.on_submit()
+
+
+class FakeAgentOnlyKeyboard:
+    def __init__(self, page: Any) -> None:
+        self.page = page
+
+    async def type(self, text: str, **_: Any) -> None:
+        self.page.typed.append(text)
+        self.page.on_type(text)
+
+    async def press(self, key: str) -> None:
+        self.page.typed.append(f"<{key}>")
+        self.page.on_press(key)
+
+    async def insert_text(self, text: str) -> None:
+        self.page.typed.append(text)
+        self.page.inserted_text.append(text)
+
+
+class FakeAgentOnlyEntityPage:
+    def __init__(
+        self,
+        *,
+        options: list[tuple[str, str]] | None = None,
+        late_options: list[tuple[str, str]] | None = None,
+        on_submit: Any = None,
+    ) -> None:
+        self.keyboard = FakeAgentOnlyKeyboard(self)
+        self.typed: list[str] = []
+        self.inserted_text: list[str] = []
+        self.chips: list[dict[str, str]] = []
+        self.options = options if options is not None else []
+        self.late_options = late_options
+        self.query: str | None = None
+        self.highlight = 0
+        self.committed: list[str] = []
+        self.editor_clicks = 0
+        self.submit_clicks = 0
+        self.on_submit = on_submit
+
+    def _visible(self) -> list[tuple[str, str]]:
+        q = (self.query or "").casefold()
+        return [o for o in self.options if q in o[0].casefold()]
+
+    def on_type(self, text: str) -> None:
+        if text == "@":
+            self.query, self.highlight = "", 0
+        elif self.query is not None and text != " ":
+            self.query += text
+
+    def on_press(self, key: str) -> None:
+        if key == "ArrowDown":
+            self.highlight += 1
+        elif key == "Escape":
+            self.query = None
+        elif key == "Enter" and self.query is not None:
+            visible = self._visible()
+            if self.highlight < len(visible):
+                title, entity_id = visible[self.highlight]
+                kind = "entity" if entity_id else "media"
+                self.chips.append({"text": title, "entity_id": entity_id, "reference_type": kind})
+                self.committed.append(title)
+            self.query = None
+
+    def locator(self, css: str) -> FakeAgentOnlyLoc:
+        if "ProseMirror" in css:
+            return FakeAgentOnlyLoc(self, "editor", ["editor"])
+        if "button" in css:
+            return FakeAgentOnlyLoc(self, "submit", ["submit"])
+        raise AssertionError(f"unmodelled selector: {css!r}")
+
+    async def wait_for_timeout(self, _ms: float) -> None:
+        return None
+
+    async def evaluate(self, script: str, _arg: Any = None) -> Any:
+        if "asset-title" in script:
+            titles = [t for t, _ in self._visible()]
+            if self.late_options is not None:
+                self.options, self.late_options = self.late_options, None
+            return titles
+        if "mention-chip" in script:
+            return list(self.chips)
+        return None
+
+
+@pytest.mark.asyncio
+async def test_agent_only_unported_video_accepts_names_only() -> None:
+    req_names = video_api.GenerateVideoRequest(prompt="x", reference_entity_names=("Ada",))
+    assert aoc.unported_video(req_names) is None
+
+    req_ids = video_api.GenerateVideoRequest(prompt="x", reference_entities=("e1",))
+    assert aoc.unported_video(req_ids) == "character references"
+
+
+@pytest.mark.asyncio
+async def test_agent_only_character_mention_attaches_entity_chip() -> None:
+    page = FakeAgentOnlyEntityPage(options=[("Ada", "ent-ada")])
+    composer = aoc.AgentOnlyComposer()
+    committed = await composer.attach_character_entities(page, names=("Ada",))
+    assert committed == ("ent-ada",)
+    assert page.committed == ["Ada"]
+    assert len(page.chips) == 1
+    assert page.chips[0] == {"text": "Ada", "entity_id": "ent-ada", "reference_type": "entity"}
+
+
+@pytest.mark.asyncio
+async def test_agent_only_character_mention_multiple_characters() -> None:
+    page = FakeAgentOnlyEntityPage(options=[("Ada", "ent-ada"), ("Bob", "ent-bob")])
+    composer = aoc.AgentOnlyComposer()
+    committed = await composer.attach_character_entities(page, names=("Ada", "Bob"))
+    assert committed == ("ent-ada", "ent-bob")
+    assert page.committed == ["Ada", "Bob"]
+    assert len(page.chips) == 2
+
+
+@pytest.mark.asyncio
+async def test_agent_only_character_mention_exact_name_matching_refuses_miss() -> None:
+    page = FakeAgentOnlyEntityPage(options=[("Ada Wong", "ent-wong")])
+    composer = aoc.AgentOnlyComposer()
+    with pytest.raises(ReferenceNotFoundError, match="no option is titled exactly that"):
+        await composer.attach_character_entities(page, names=("Ada",))
+    assert page.committed == []
+
+
+@pytest.mark.asyncio
+async def test_agent_only_character_mention_media_chip_refused() -> None:
+    page = FakeAgentOnlyEntityPage(options=[("Ada", "")])  # empty entity_id commits as media
+    composer = aoc.AgentOnlyComposer()
+    with pytest.raises(ReferenceNotFoundError, match="picker committed 'Ada' \\(media\\)"):
+        await composer.attach_character_entities(page, names=("Ada",))
+
+
+@pytest.mark.asyncio
+async def test_agent_only_character_mention_different_name_refused() -> None:
+    page = FakeAgentOnlyEntityPage(
+        options=[("Ada cooking", ""), ("Ada", "ent-ada")],
+        late_options=[("Ada cooking", ""), ("Ada Two", "ent-two"), ("Ada", "ent-ada")],
+    )
+    composer = aoc.AgentOnlyComposer()
+    with pytest.raises(ReferenceNotFoundError, match="different names"):
+        await composer.attach_character_entities(page, names=("Ada",))
+    assert page.committed == ["Ada Two"]
+
+
+@pytest.mark.asyncio
+async def test_agent_only_character_mention_several_options_titled_name_refused() -> None:
+    page = FakeAgentOnlyEntityPage(options=[("Ada", ""), ("Ada", "ent-ada")])
+    composer = aoc.AgentOnlyComposer()
+    with pytest.raises(ReferenceNotFoundError, match="2 options are titled exactly that"):
+        await composer.attach_character_entities(page, names=("Ada",))
+    assert page.committed == []
+
+
+@pytest.mark.asyncio
+async def test_agent_only_submit_attaches_character_and_appends_directive() -> None:
+    page = FakeAgentOnlyEntityPage(options=[("Ada", "ent-ada")])
+    composer = aoc.AgentOnlyComposer()
+    await composer._submit(  # pyright: ignore[reportPrivateUsage]
+        page,
+        "Make me a video of Ada dancing in a 16:9 aspect ratio.",
+        reference_entity_names=("Ada",),
+    )
+    assert page.committed == ["Ada"]
+    assert len(page.chips) == 1
+    assert page.chips[0]["reference_type"] == "entity"
+    assert "Make me a video" in page.inserted_text[-1]
+    assert page.submit_clicks == 1
+
+
+@pytest.mark.asyncio
+async def test_run_agent_video_passes_reference_entity_names_to_generate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_apply_defaults(*_: Any, **__: Any) -> aoc.DefaultsSnapshot:
+        return aoc.DefaultsSnapshot(section="video", aspect_index=0, count_index=0, model_text="")
+
+    async def fake_generate(*_: Any, **kw: Any) -> list[aoc.TileMedia]:
+        captured.update(kw)
+        return [
+            aoc.TileMedia(
+                uuid="00000000-0000-4000-8000-000000000001",
+                src="https://flow-content.google/video/1",
+            )
+        ]
+
+    monkeypatch.setattr(aoc.AgentOnlyComposer, "apply_defaults", fake_apply_defaults)
+    monkeypatch.setattr(aoc.AgentOnlyComposer, "generate", fake_generate)
+    page = MagicMock()
+
+    request = video_api.GenerateVideoRequest(prompt="Ada dancing", reference_entity_names=("Ada",))
+    res = await aoc.run_agent_video(
+        page,
+        request,
+        project_id="p1",
+        save=AsyncMock(),
+        poll_timeout_s=5,
+        download=False,
+        on_started=None,
+    )
+    assert res.status.status == "MEDIA_GENERATION_STATUS_SUCCESSFUL"
+    assert captured.get("reference_entity_names") == ("Ada",)
 
 
 # --- Playwright failures become typed errors ------------------------------------------------
