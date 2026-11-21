@@ -242,6 +242,8 @@ def test_anchors_are_structural_not_labels() -> None:
     assert mc.PROJECT_TITLE_INPUT.startswith("flow-editable-text")
     assert "editable-text-input" in mc.PROJECT_TITLE_INPUT
     assert ".header-title" in mc.PROJECT_TITLE_INPUT
+    assert "flow-creative-agent-prompt-box" in mc.AGENT_ONLY_ANCHOR
+    assert "flow-agent-panel" in mc.AGENT_ONLY_ANCHOR
 
 
 @pytest.mark.parametrize("rpcid", [mc.CREATE_PROJECT_RPC, mc.RENAME_PROJECT_RPC])

@@ -115,8 +115,8 @@ AGENT_ONLY_SETTLE_S = 2.0
 #: served the agent-only one once, and the classic one on the next nine loads.
 AGENT_ONLY_RELOADS = 3
 AGENT_ONLY_RELOAD_WAIT_S = 5.0
-#: The agent-only composer's own Agent-settings button — the thing its driver needs anyway.
-AGENT_ONLY_ANCHOR = "flow-creative-agent-prompt-box button:has(mat-icon:text-is('tune'))"
+#: The agent-only composer's anchor element — present only on the agentic composer.
+AGENT_ONLY_ANCHOR = "flow-creative-agent-prompt-box, flow-agent-panel"
 #: What `ensure_editor` found: the classic migrated composer, or #799's agent-only one.
 ComposerKind = Literal["classic", "agent_only"]
 #: What :meth:`MigratedComposer._exit_agent_mode` did. `"blocked"` — the chip was there

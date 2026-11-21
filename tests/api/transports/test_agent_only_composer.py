@@ -174,7 +174,14 @@ async def test_a_chip_that_mounts_late_is_not_called_agent_only(
 
 
 @pytest.mark.asyncio
-async def test_no_agent_settings_button_is_not_agent_only(page: Page) -> None:
-    """The verdict needs one presence: the agent composer's own settings button."""
+async def test_agent_only_verdict_without_tune_icon(page: Page) -> None:
+    """Flow removed the tune icon; agent-only composer must still be recognized."""
     without_tune = AGENT_ONLY.replace('<mat-icon class="google-symbols">tune</mat-icon>', "")
-    assert await _verdict(page, without_tune) is False
+    assert await _verdict(page, without_tune) is True
+
+
+@pytest.mark.asyncio
+async def test_no_agent_anchor_is_not_agent_only(page: Page) -> None:
+    """The verdict needs one presence: the agent composer's anchor element."""
+    without_anchor = AGENT_ONLY.replace("flow-creative-agent-prompt-box", "flow-prompt-box")
+    assert await _verdict(page, without_anchor) is False

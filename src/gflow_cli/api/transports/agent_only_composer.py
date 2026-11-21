@@ -55,7 +55,6 @@ from gflow_cli.api.transports._mc_common import (
 from gflow_cli.api.transports._mc_submit_observe import read_project_listing
 from gflow_cli.api.transports.batchexecute import asb_token, generation_record_by_poster
 from gflow_cli.api.transports.migrated_composer import (
-    AGENT_ONLY_ANCHOR,
     ASPECT_LIGATURE,
     IMAGE_ASPECT_LIGATURE,
     IMAGE_MODEL_MENU_MATCHERS,
@@ -93,7 +92,13 @@ Section = Literal["image", "video"]
 Confirm = Literal["account", "always", "never"]
 
 PANE = "flow-settings-view"
-SETTINGS_BUTTON = AGENT_ONLY_ANCHOR
+SETTINGS_BUTTON = (
+    "flow-agent-panel button:has(mat-icon:text-is('settings_2')), "
+    "flow-creative-agent-prompt-box button:has(mat-icon:text-is('settings_2')), "
+    "button:has(mat-icon:text-is('settings_2')), "
+    "flow-creative-agent-prompt-box button:has(mat-icon:text-is('tune')), "
+    "button#tune"
+)
 TOGGLE_GROUP = f"{PANE} mat-button-toggle-group"
 TOGGLE_RADIO = "button[role='radio']"
 CONFIRM_INPUT = f"{PANE} mat-radio-button input[type='radio']"
