@@ -282,7 +282,7 @@ function renderUnifiedPane() {
       document.body.appendChild(menu);
     };
   };
-  setupRow('#row-video', 'video', ['Veo 3.1 - Lite', 'Veo 3.1 - Fast', 'Veo 3.1 - Quality']);
+  setupRow('#row-video', 'video', ['Veo 3.1 - Lite', 'Veo 3.1 - Fast', 'Veo 3.1 - Quality', 'Omni 1.2 Flash']);
   setupRow('#row-image', 'image', ['Nano Banana 2.1', 'Nano Banana Pro', 'Imagen 3.5']);
   c.querySelector('button.header-action').onclick = () => {
     window.settingsState.closedCount++;
@@ -356,4 +356,36 @@ async def test_unified_settings_view_image_defaults_apply(page: Page) -> None:
     assert state["confirm"] == "1"  # "always" mapped to value 1
     assert state["imageModel"] == "Nano Banana Pro"
     assert state["closedCount"] == 1
+    assert await page.locator(aoc.PANE).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_unified_settings_view_video_defaults_apply_omni_1_2_flash(page: Page) -> None:
+    """Verifies Omni 1.2 Flash can be selected and restored in flow-unified-settings-view."""
+    await page.set_content(UNIFIED_SETTINGS_FIXTURE)
+    composer = aoc.AgentOnlyComposer()
+
+    snap = await composer.apply_defaults(
+        page,
+        section="video",
+        aspect_ligature="crop_9_16",
+        count=1,
+        model=VIDEO_MODEL_MENU_MATCHERS[video_api.VideoModel.OMNI_1_2_FLASH],
+        confirm="never",
+    )
+
+    assert snap.section == "video"
+    assert snap.model_text == "Veo 3.1 - Lite"
+
+    state: dict[str, Any] = await page.evaluate("window.settingsState")
+    assert state["confirm"] == "2"
+    assert state["videoModel"] == "Omni 1.2 Flash"
+    assert state["closedCount"] == 1
+    assert await page.locator(aoc.PANE).count() == 0
+
+    await composer.restore_defaults(page, snap)
+
+    restored_state: dict[str, Any] = await page.evaluate("window.settingsState")
+    assert restored_state["videoModel"] == "Veo 3.1 - Lite"
+    assert restored_state["closedCount"] == 2
     assert await page.locator(aoc.PANE).count() == 0

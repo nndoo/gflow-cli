@@ -1188,9 +1188,8 @@ async def test_unported_image_forms_are_refused(request_: Any) -> None:
         {"reference_entities": ("e1",)},
         # The agent pane has no resolution control: driving on would silently drop it.
         {"resolution": "720p"},
-        # Load-bearing: Omni 1.2 IS in the menu matchers (they are built from the labels),
-        # so only its own branch stops the agent pane driving an unmeasured model.
-        {"model": video_api.VideoModel.OMNI_1_2_FLASH},
+        # An unmapped model not in VIDEO_MODEL_MENU_MATCHERS is refused.
+        {"model": MagicMock(value="unsupported_model")},
     ],
 )
 async def test_unported_video_forms_are_refused(changes: dict[str, Any]) -> None:
@@ -1391,6 +1390,73 @@ async def test_agent_only_unported_video_accepts_names_only() -> None:
 
     req_ids = video_api.GenerateVideoRequest(prompt="x", reference_entities=("e1",))
     assert aoc.unported_video(req_ids) == "character references"
+
+
+@pytest.mark.asyncio
+async def test_agent_only_unported_video_accepts_omni_1_2_flash() -> None:
+    """Omni 1.2 Flash is accepted on the agent-only composer."""
+    req = video_api.GenerateVideoRequest(
+        prompt="dancing scene",
+        model=video_api.VideoModel.OMNI_1_2_FLASH,
+        duration=15,
+        aspect=video_api.Aspect.PORTRAIT,
+        count=1,
+    )
+    assert aoc.unported_video(req) is None
+    assert video_api.VideoModel.OMNI_1_2_FLASH in aoc.VIDEO_MODEL_MENU_MATCHERS
+    matcher = aoc.VIDEO_MODEL_MENU_MATCHERS[video_api.VideoModel.OMNI_1_2_FLASH]
+    assert matcher.matches("Omni 1.2 Flash")
+    assert not matcher.matches("Omni 1.2 Flash [Lower Priority]")
+
+
+@pytest.mark.asyncio
+async def test_run_agent_video_drives_omni_1_2_flash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run_agent_video applies Omni 1.2 Flash model matcher and includes duration in directive."""
+    captured: dict[str, Any] = {}
+
+    async def fake_apply_defaults(*_: Any, **kw: Any) -> aoc.DefaultsSnapshot:
+        captured["apply_defaults"] = kw
+        return aoc.DefaultsSnapshot(
+            section="video", aspect_index=0, count_index=0, model_text="Veo 3.1 - Lite"
+        )
+
+    async def fake_generate(_: Any, _page: Any, prompt: str, **kw: Any) -> list[aoc.TileMedia]:
+        captured["prompt"] = prompt
+        captured.update(kw)
+        return [
+            aoc.TileMedia(
+                uuid="00000000-0000-4000-8000-000000000001",
+                src="https://flow-content.google/video/1",
+            )
+        ]
+
+    monkeypatch.setattr(aoc.AgentOnlyComposer, "apply_defaults", fake_apply_defaults)
+    monkeypatch.setattr(aoc.AgentOnlyComposer, "restore_defaults", AsyncMock())
+    monkeypatch.setattr(aoc.AgentOnlyComposer, "generate", fake_generate)
+    page = MagicMock()
+
+    request = video_api.GenerateVideoRequest(
+        prompt="futuristic city",
+        model=video_api.VideoModel.OMNI_1_2_FLASH,
+        duration=15,
+        aspect=video_api.Aspect.PORTRAIT,
+        count=1,
+    )
+    res = await aoc.run_agent_video(
+        page,
+        request,
+        project_id="p1",
+        save=AsyncMock(),
+        poll_timeout_s=5,
+        download=False,
+        on_started=None,
+    )
+    assert res.status.status == "MEDIA_GENERATION_STATUS_SUCCESSFUL"
+    model_matcher = captured["apply_defaults"]["model"]
+    assert model_matcher.matches("Omni 1.2 Flash")
+    assert "15 second" in captured["prompt"]
 
 
 @pytest.mark.asyncio
