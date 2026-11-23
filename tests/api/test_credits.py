@@ -65,8 +65,47 @@ def test_balance_is_index_zero_of_the_nzlxg_reply() -> None:
     assert CreditsInfo.from_nzlxg(_REPLY) == CreditsInfo(credits=37)
 
 
+def test_balance_falls_back_to_index_five_when_index_zero_is_null() -> None:
+    # Simulates a server-side shape change where [0] becomes None but [5] still holds
+    # the balance — both indices moved together in every measurement (spike 2026-10-22).
+    payload = [None, 3, 8, 1, None, 50, [1793000000, 0]]
+    assert CreditsInfo.from_nzlxg(payload) == CreditsInfo(credits=50)
+
+
+def test_balance_falls_back_to_index_five_when_index_zero_is_a_list() -> None:
+    # Another plausible shape change: balance wrapped in a nested list at [0].
+    payload = [[37], 3, 8, 1, None, 37, [1793000000, 0]]
+    assert CreditsInfo.from_nzlxg(payload) == CreditsInfo(credits=37)
+
+
+def test_zero_balance_at_index_zero_is_valid() -> None:
+    # 0 is a legitimate balance (daily cap exhausted); must not be confused with falsy.
+    payload = [0, 3, 8, 1, None, 0, [1793000000, 0]]
+    assert CreditsInfo.from_nzlxg(payload) == CreditsInfo(credits=0)
+
+
+def test_zero_balance_at_index_five_fallback_is_valid() -> None:
+    # 0 is valid even when recovered from the fallback index.
+    payload = [None, 3, 8, 1, None, 0, [1793000000, 0]]
+    assert CreditsInfo.from_nzlxg(payload) == CreditsInfo(credits=0)
+
+
 @pytest.mark.parametrize("payload", [None, [], {"credits": 5}, [True], ["5"], [-1]])
 def test_a_reply_without_a_non_negative_balance_is_rejected(payload: object) -> None:
+    with pytest.raises(ValueError, match="nzlxg"):
+        CreditsInfo.from_nzlxg(payload)
+
+
+def test_a_reply_where_both_index_zero_and_five_are_invalid_is_rejected() -> None:
+    # Neither candidate holds a valid balance — must still raise, never coerce to 0.
+    payload = [None, 3, 8, 1, None, None, [1793000000, 0]]
+    with pytest.raises(ValueError, match="nzlxg"):
+        CreditsInfo.from_nzlxg(payload)
+
+
+def test_a_short_payload_with_no_index_five_is_rejected() -> None:
+    # Payload shorter than 6 items and [0] invalid — no fallback available.
+    payload = [None, 3]
     with pytest.raises(ValueError, match="nzlxg"):
         CreditsInfo.from_nzlxg(payload)
 

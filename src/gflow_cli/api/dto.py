@@ -8,12 +8,15 @@ KeyErrors leak.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 if TYPE_CHECKING:
     from gflow_cli.errors import GFlowError
+
+_log = logging.getLogger(__name__)
 
 
 GenerationPhase = Literal["submit_attempted", "remote_started"]
@@ -64,16 +67,48 @@ class CreditsInfo:
     def from_nzlxg(cls, payload: object) -> CreditsInfo:
         """Parse ``nzlxg``'s reply without coercing a malformed balance to zero.
 
-        ``[0]`` is the balance the account menu shows: it matched in 5/5 reads, one of
-        them after a 10-credit spend (docs/superpowers/spikes/2026-10-22-credits-balance-
-        on-nzlxg.md). ``[5]`` moved with it and is not read.
+        Primary index is ``[0]``: matched in 5/5 reads including a post-spend read
+        (docs/superpowers/spikes/2026-10-22-credits-balance-on-nzlxg.md).  ``[5]``
+        moved with it in every measurement, so it is a confirmed fallback when ``[0]``
+        is not a non-negative integer (e.g. Flow wrapped the balance in a nested list or
+        shifted its position in a server-side update).
+
+        Debug logging emits only payload *structure* (types and lengths) — never values,
+        cookies, or tokens — so it is safe to leave in production builds.  It fires only
+        when ``[0]`` is not the expected shape, which means it is silent on every healthy
+        read.
         """
         items = cast("list[object]", payload) if isinstance(payload, list) else []
         value = items[0] if items else None
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            msg = "unexpected nzlxg reply shape: [0] must be a non-negative integer"
-            raise ValueError(msg)
-        return cls(credits=value)
+
+        def _is_valid(v: object) -> bool:
+            return not isinstance(v, bool) and isinstance(v, int) and v >= 0
+
+        if _is_valid(value):
+            return cls(credits=cast(int, value))
+
+        # [0] is not a non-negative integer — log structure for diagnosis then try [5].
+        # `payload` is typed `object` (the widest safe type for a parser); accessing
+        # __class__ on it triggers reportUnknownMemberType in strict mode.  The noqa
+        # suppresses ruff's B010; the type: ignore suppresses pyright.  The log line
+        # emits only class names — never values, tokens, or cookies.
+        _payload_cls: str = payload.__class__.__name__  # type: ignore[reportUnknownMemberType]
+        _item_cls: list[str] = [x.__class__.__name__ for x in items[:8]]  # type: ignore[reportUnknownMemberType]
+        _log.debug(
+            "nzlxg [0] not a non-negative integer — trying fallback; "
+            "payload type=%s len=%s element_types=%s",
+            _payload_cls,
+            len(items),
+            _item_cls,
+        )
+
+        fallback = items[5] if len(items) > 5 else None
+        if _is_valid(fallback):
+            _log.debug("nzlxg balance recovered from [5]: type=%s", type(fallback).__name__)
+            return cls(credits=cast(int, fallback))
+
+        msg = "unexpected nzlxg reply shape: [0] must be a non-negative integer"
+        raise ValueError(msg)
 
 
 @dataclass(frozen=True)
