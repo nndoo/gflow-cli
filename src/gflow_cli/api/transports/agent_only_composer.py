@@ -118,13 +118,34 @@ PANE_BACK = (
 )
 MODEL_PICKER = {
     "image": (
-        f"{PANE} button:has(mat-icon:text-is('image')), {PANE} button.image-model-picker-button"
+        f"{PANE} button.defaults-row:has(mat-icon:text-is('image')), "
+        f"{PANE} .defaults-row:has(mat-icon:text-is('image')), "
+        f"{PANE} button:has(mat-icon:text-is('image')), "
+        f"{PANE} button.image-model-picker-button"
     ),
     "video": (
-        f"{PANE} button:has(mat-icon:text-is('videocam')), {PANE} button.video-model-picker-button"
+        f"{PANE} button.defaults-row:has(mat-icon:text-is('videocam')), "
+        f"{PANE} .defaults-row:has(mat-icon:text-is('videocam')), "
+        f"{PANE} button:has(mat-icon:text-is('videocam')), "
+        f"{PANE} button.video-model-picker-button"
     ),
 }
-MENU_ITEM = "[role='menuitem'], [role='option'], mat-list-item, button.model-option"
+MENU_ITEM = (
+    "[role='menuitem'], "
+    "[role='option'], "
+    ".cdk-overlay-pane button, "
+    "flow-agent-panel mat-radio-button, "
+    "flow-agent-panel [role='radio'], "
+    "flow-agent-panel mat-button-toggle, "
+    "flow-agent-panel mat-list-option, "
+    "flow-agent-panel mat-list-item, "
+    "flow-agent-panel .mat-mdc-list-item, "
+    "flow-agent-panel button.defaults-row, "
+    "flow-agent-panel button.model-option, "
+    "flow-agent-panel button.option-row, "
+    "mat-list-item, "
+    "button.model-option"
+)
 EDITOR = "div.ProseMirror"
 SUBMIT = "flow-generate-icon-button button"
 IN_FLIGHT = "flow-stop-icon-button"
@@ -315,19 +336,128 @@ def _picker_label(text: str) -> str:
     return text.replace("arrow_drop_down", "").replace("arrow_forward", "").strip()
 
 
+def _is_likely_model_option(text: str) -> bool:
+    t = text.casefold()
+    return any(
+        kw in t
+        for kw in (
+            "veo",
+            "omni",
+            "nano",
+            "banana",
+            "imagen",
+            "lite",
+            "fast",
+            "quality",
+            "flash",
+            "pro",
+        )
+    )
+
+
 def _model_hit(text: str, wants: ModelMenuMatcher | str) -> bool:
     if isinstance(wants, str):
         cleaned = _picker_label(text)
-        return cleaned == wants or wants.casefold() in cleaned.casefold()
+        wants_clean = _picker_label(wants)
+        if cleaned == wants_clean or wants_clean.casefold() in cleaned.casefold():
+            return True
+        if len(cleaned) >= 4 and cleaned.casefold() in wants_clean.casefold():
+            return True
+        return False
     return wants.matches(text)
 
 
+async def _find_overlay_model_option(
+    page: Page, wants: ModelMenuMatcher | str
+) -> tuple[Locator | None, str, list[str]]:
+    overlay_items = page.locator(
+        ".cdk-overlay-pane [role='menuitem'], "
+        ".cdk-overlay-pane [role='option'], "
+        ".cdk-overlay-pane button, "
+        "[role='menuitem'], "
+        "[role='option']"
+    )
+    if not (await overlay_items.count() > 0 and await overlay_items.first.is_visible()):
+        return None, "", []
+    texts = [t.strip() for t in await overlay_items.all_text_contents() if t.strip()]
+    hits = [i for i, t in enumerate(texts) if _model_hit(t, wants)]
+    if len(hits) == 1:
+        return overlay_items.nth(hits[0]), texts[hits[0]], texts
+    return None, "", texts
+
+
+async def _find_subpage_model_option(
+    page: Page, wants: ModelMenuMatcher | str
+) -> tuple[Locator | None, str, list[str]]:
+    sub_candidates = page.locator(
+        "flow-agent-panel mat-radio-button, "
+        "flow-agent-panel [role='radio'], "
+        "flow-agent-panel mat-button-toggle, "
+        "flow-agent-panel mat-list-option, "
+        "flow-agent-panel mat-list-item, "
+        "flow-agent-panel [mat-list-item], "
+        "flow-agent-panel .mat-mdc-list-item, "
+        "flow-agent-panel button.defaults-row, "
+        "flow-agent-panel button.model-option, "
+        "flow-agent-panel button.option-row, "
+        "flow-agent-panel button:not(.header-action)"
+    )
+    count = await sub_candidates.count()
+    if count == 0:
+        return None, "", []
+    sub_texts: list[str] = []
+    sub_hits: list[int] = []
+    for i in range(count):
+        cand = sub_candidates.nth(i)
+        if await cand.is_visible():
+            txt = (await cand.inner_text()).strip()
+            if txt:
+                sub_texts.append(txt)
+                if _model_hit(txt, wants):
+                    sub_hits.append(i)
+    if len(sub_hits) == 1:
+        offered = [t for t in sub_texts if _is_likely_model_option(t)] or sub_texts
+        return sub_candidates.nth(sub_hits[0]), sub_texts[sub_hits[0]], offered
+    filtered = [t for t in sub_texts if _is_likely_model_option(t)]
+    return None, "", (filtered if filtered else sub_texts)
+
+
+async def _discover_model_option(
+    page: Page, picker: Locator, wants: ModelMenuMatcher | str, timeout_s: float = 5.0
+) -> tuple[Locator | None, str, list[str]]:
+    deadline = time.monotonic() + timeout_s
+    last_offered: list[str] = []
+    while time.monotonic() < deadline:
+        target, text, offered = await _find_overlay_model_option(page, wants)
+        if target is not None:
+            return target, text, offered
+        if offered:
+            last_offered = offered
+
+        if not await picker.is_visible():
+            sub_target, sub_text, sub_offered = await _find_subpage_model_option(page, wants)
+            if sub_target is not None:
+                return sub_target, sub_text, sub_offered
+            if sub_offered:
+                last_offered = sub_offered
+
+        await asyncio.sleep(0.1)
+    return None, "", last_offered
+
+
 async def _ensure_picker_visible(page: Page, picker: Locator) -> None:
-    if not await picker.is_visible():
-        sub_back = page.locator(PANE_BACK).last
-        if await sub_back.count():
-            await sub_back.click(timeout=4000)
+    if await picker.is_visible():
+        return
+    await page.wait_for_timeout(200)
+    if await picker.is_visible():
+        return
+    sub_back = page.locator(PANE_BACK).last
+    if await sub_back.count() and await sub_back.is_visible():
+        await sub_back.click(timeout=4000)
+        try:
             await picker.wait_for(state="visible", timeout=int(PANE_S * 1000))
+        except PlaywrightError:
+            pass
 
 
 async def _is_toggle_checked(target: Locator) -> bool:
@@ -472,48 +602,65 @@ class AgentOnlyComposer:
                 detail=f"agent-only composer: {section} model picker missing from Agent settings"
             )
 
-        if _model_hit(await picker.inner_text(), wants):
+        current_label = await self._read_picker_model(page, section)
+        current_text = await picker.inner_text()
+        if _model_hit(current_label, wants) or _model_hit(current_text, wants):
             return
+
+        await picker.scroll_into_view_if_needed()
         await _click(picker, f"the {section} model picker")
-        items = page.locator(MENU_ITEM)
-        try:
-            await items.first.wait_for(state="visible", timeout=5000)
-        except Exception as exc:
+
+        target_item, target_text, offered = await _discover_model_option(page, picker, wants)
+        if target_item is None:
+            await page.keyboard.press("Escape")
+            if offered:
+                hits = [t for t in offered if _model_hit(t, wants)]
+                raise ConfigurationError(
+                    detail=(
+                        f"{section} model matched {len(hits)} Agent-settings entries; "
+                        f"offered: {', '.join(offered)}"
+                    ),
+                    remediation_hint="Pass a --model that names one offered entry, or omit it.",
+                )
             raise UiSelectorDriftError(
                 detail=f"agent-only composer: the {section} model menu ({MENU_ITEM}) did not open"
-            ) from exc
-        offered = [t.strip() for t in await items.all_text_contents()]
-        hits = [i for i, text in enumerate(offered) if _model_hit(text, wants)]
-        if len(hits) != 1:
-            await page.keyboard.press("Escape")
-            raise ConfigurationError(
-                detail=(
-                    f"{section} model matched {len(hits)} Agent-settings entries; "
-                    f"offered: {', '.join(offered)}"
-                ),
-                remediation_hint="Pass a --model that names one offered entry, or omit it.",
             )
-        await _click(items.nth(hits[0]), f"the {section} model {offered[hits[0]]!r}")
+
+        await _click(target_item, f"the {section} model {target_text!r}")
         await _ensure_picker_visible(page, picker)
-        deadline = time.monotonic() + RADIO_SETTLE_S
-        while not _model_hit(await picker.inner_text(), wants):
-            if time.monotonic() >= deadline:
+
+        settle_deadline = time.monotonic() + RADIO_SETTLE_S
+        while True:
+            current_label = await self._read_picker_model(page, section)
+            current_text = await picker.inner_text()
+            if _model_hit(current_label, wants) or _model_hit(current_text, wants):
+                break
+            if time.monotonic() >= settle_deadline:
                 raise UiSelectorDriftError(
                     detail=(
-                        f"agent-only composer: chose {offered[hits[0]]!r} but the {section} "
+                        f"agent-only composer: chose {target_text!r} but the {section} "
                         "model picker did not change"
                     )
                 )
             await asyncio.sleep(0.1)
-        log.info("migrated.agent_only.model_selected", section=section, model=offered[hits[0]])
+        log.info("migrated.agent_only.model_selected", section=section, model=target_text)
 
     async def _discard_pane(self, page: Page) -> None:
-        """Leave Agent settings WITHOUT saving, through the panel's own back arrow (measured)."""
-        back = page.locator(PANE_BACK).last
+        """Leave Agent settings WITHOUT saving, through the panel's own back arrow."""
+        pane = page.locator(PANE).first
+        for _ in range(2):
+            if not await pane.count() or not await pane.is_visible():
+                break
+            back = page.locator(PANE_BACK).last
+            try:
+                if await back.count() and await back.is_visible():
+                    await back.click(timeout=3000)
+                    await page.wait_for_timeout(200)
+            except Exception:
+                break
         try:
-            if await back.count():
-                await back.click(timeout=4000)
-                await page.locator(PANE).first.wait_for(state="hidden", timeout=int(PANE_S * 1000))
+            if await pane.count() and await pane.is_visible():
+                await pane.wait_for(state="hidden", timeout=3000)
         except Exception as exc:  # noqa: BLE001 - cleanup must not mask the real failure
             log.warning("migrated.agent_only.pane_discard_failed", error=str(exc)[:200])
 

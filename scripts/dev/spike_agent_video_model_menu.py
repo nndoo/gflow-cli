@@ -27,7 +27,6 @@ from _spike_common import (  # noqa: E402, isort: skip
 )
 
 from gflow_cli.api.transports.agent_only_composer import (  # noqa: E402
-    MENU_ITEM,
     MODEL_PICKER,
     PANE,
     PANE_BACK,
@@ -71,12 +70,72 @@ async def main() -> int:
         summary["current_video_picker_text"] = current_text
         step("video_picker", f"current picker text: {current_text!r}")
 
-        # Click video picker to open model menu
+        # Click video picker to open model menu or sub-page
         step("open_menu", "clicking video model picker")
         await picker.click(timeout=5_000)
-        items = page.locator(MENU_ITEM)
-        await items.first.wait_for(state="visible", timeout=6_000)
-        offered = [t.strip() for t in await items.all_text_contents() if t.strip()]
+        await page.wait_for_timeout(1_500)
+
+        # Introspect DOM for both overlay menus and sub-page elements
+        dom_dump_js = """() => {
+            const data = {
+                overlays: [],
+                panelElements: [],
+                subPageDetected: false,
+            };
+            const overlayNodes = document.querySelectorAll(
+                '.cdk-overlay-pane [role="menuitem"], ' +
+                '.cdk-overlay-pane [role="option"], ' +
+                '.cdk-overlay-pane button'
+            );
+            overlayNodes.forEach(el => {
+                const text = (el.innerText || '').trim();
+                if (text) data.overlays.push({
+                    tag: el.tagName.toLowerCase(),
+                    role: el.getAttribute('role') || '',
+                    class: el.className || '',
+                    text: text,
+                });
+            });
+
+            const panel = document.querySelector('flow-agent-panel');
+            if (panel) {
+                const cands = panel.querySelectorAll(
+                    'mat-radio-button, [role="radio"], mat-button-toggle, ' +
+                    'mat-list-option, mat-list-item, .mat-mdc-list-item, ' +
+                    'button.defaults-row, button.model-option, ' +
+                    'button.option-row, button:not(.header-action)'
+                );
+                cands.forEach(el => {
+                    const text = (el.innerText || '').trim();
+                    if (text && text.length < 120) data.panelElements.push({
+                        tag: el.tagName.toLowerCase(),
+                        role: el.getAttribute('role') || '',
+                        class: el.className || '',
+                        text: text,
+                        ariaChecked: el.getAttribute('aria-checked') || '',
+                    });
+                });
+                const headerBack = panel.querySelector('button:has(mat-icon)');
+                if (headerBack) data.subPageDetected = true;
+            }
+            return data;
+        }"""
+        dom_info: dict[str, Any] = await page.evaluate(dom_dump_js)
+        summary["dom_dump"] = dom_info
+
+        offered: list[str] = []
+        if dom_info["overlays"]:
+            offered = [o["text"] for o in dom_info["overlays"]]
+        elif dom_info["panelElements"]:
+            keywords = ("veo", "omni", "flash", "lite", "fast", "quality", "banana", "imagen")
+            offered = [
+                p["text"]
+                for p in dom_info["panelElements"]
+                if any(k in p["text"].lower() for k in keywords)
+            ]
+            if not offered:
+                offered = [p["text"] for p in dom_info["panelElements"]]
+
         summary["offered_video_models"] = offered
         step("menu_options", f"offered models: {offered}")
 
@@ -94,12 +153,17 @@ async def main() -> int:
         out_json.write_text(json.dumps(summary, indent=2), encoding="utf-8")
         step("summary", f"saved to {out_json}")
 
-        # Close menu without saving
+        # Close sub-page and pane cleanly without saving
         await page.keyboard.press("Escape")
-        await page.wait_for_timeout(500)
-        back = page.locator(PANE_BACK).last
-        if await back.count():
-            await back.click(timeout=4_000)
+        await page.wait_for_timeout(300)
+        # In sub-page navigation, first back returns to main settings, second back closes panel
+        for _ in range(2):
+            if not await pane.count() or not await pane.first.is_visible():
+                break
+            back = page.locator(PANE_BACK).last
+            if await back.count() and await back.is_visible():
+                await back.click(timeout=3_000)
+                await page.wait_for_timeout(300)
         step("cleanup", "closed menu and pane")
 
     print("\nRESULT SUMMARY:")

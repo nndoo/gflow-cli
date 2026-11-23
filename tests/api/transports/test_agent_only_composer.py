@@ -389,3 +389,186 @@ async def test_unified_settings_view_video_defaults_apply_omni_1_2_flash(page: P
     assert restored_state["videoModel"] == "Veo 3.1 - Lite"
     assert restored_state["closedCount"] == 2
     assert await page.locator(aoc.PANE).count() == 0
+
+
+UNIFIED_SETTINGS_SUBPAGE_FIXTURE = """
+<flow-creative-agent-prompt-box>
+  <button id="tune" aria-label="Settings trigger">
+    <mat-icon class="google-symbols">settings_2</mat-icon>
+  </button>
+</flow-creative-agent-prompt-box>
+<div id="panel-container"></div>
+<script>
+window.settingsState = {
+  confirm: '1',
+  videoModel: 'Veo 3.1 - Lite',
+  imageModel: 'Nano Banana 2.1',
+  closedCount: 0,
+  page: 'main',
+};
+function renderSubpagePane() {
+  const c = document.getElementById('panel-container');
+  if (window.settingsState.page === 'main') {
+    c.innerHTML = `
+      <flow-agent-panel>
+        <div class="panel-header">
+          <button class="header-action"><mat-icon>arrow_back</mat-icon></button>
+          <span>Setelan agen</span>
+        </div>
+        <div class="panel-content">
+          <flow-unified-settings-view>
+            <div class="settings-section">
+              <mat-button-toggle-group>
+                <mat-button-toggle value="1">
+                  <button class="mat-button-toggle-button" aria-checked="${window.settingsState.confirm === '1'}">Selalu</button>
+                </mat-button-toggle>
+                <mat-button-toggle value="2">
+                  <button class="mat-button-toggle-button" aria-checked="${window.settingsState.confirm === '2'}">Jangan pernah</button>
+                </mat-button-toggle>
+              </mat-button-toggle-group>
+            </div>
+            <div class="settings-section">
+              <button class="defaults-row" id="row-video">
+                <span class="defaults-row-content">
+                  <mat-icon>videocam</mat-icon>
+                  <span class="defaults-row-text">
+                    <span class="defaults-row-title">Default video</span>
+                    <span class="defaults-row-caption">${window.settingsState.videoModel}, 16:9, 1 output</span>
+                  </span>
+                </span>
+                <mat-icon>arrow_forward</mat-icon>
+              </button>
+              <button class="defaults-row" id="row-image">
+                <span class="defaults-row-content">
+                  <mat-icon>image</mat-icon>
+                  <span class="defaults-row-text">
+                    <span class="defaults-row-title">Default gambar</span>
+                    <span class="defaults-row-caption">🍌 ${window.settingsState.imageModel}, 16:9, 2 output</span>
+                  </span>
+                </span>
+                <mat-icon>arrow_forward</mat-icon>
+              </button>
+            </div>
+            <div class="settings-section">Memori</div>
+          </flow-unified-settings-view>
+        </div>
+      </flow-agent-panel>
+    `;
+    c.querySelectorAll('mat-button-toggle').forEach(t => {
+      t.onclick = () => {
+        window.settingsState.confirm = t.getAttribute('value');
+        renderSubpagePane();
+      };
+    });
+    c.querySelector('#row-video').onclick = () => {
+      window.settingsState.page = 'video-defaults';
+      renderSubpagePane();
+    };
+    c.querySelector('button.header-action').onclick = () => {
+      window.settingsState.closedCount++;
+      c.innerHTML = '';
+    };
+  } else if (window.settingsState.page === 'video-defaults') {
+    c.innerHTML = `
+      <flow-agent-panel>
+        <div class="panel-header">
+          <button class="header-action"><mat-icon>arrow_back</mat-icon></button>
+          <span>Default video</span>
+        </div>
+        <div class="panel-content">
+          <flow-unified-settings-view>
+            <div class="model-selection-list">
+              <mat-radio-group>
+                <mat-radio-button value="Veo 3.1 - Lite" aria-checked="${window.settingsState.videoModel === 'Veo 3.1 - Lite'}">
+                  <span class="label">Veo 3.1 - Lite</span>
+                </mat-radio-button>
+                <mat-radio-button value="Veo 3.1 - Fast" aria-checked="${window.settingsState.videoModel === 'Veo 3.1 - Fast'}">
+                  <span class="label">Veo 3.1 - Fast</span>
+                </mat-radio-button>
+                <mat-radio-button value="Veo 3.1 - Quality" aria-checked="${window.settingsState.videoModel === 'Veo 3.1 - Quality'}">
+                  <span class="label">Veo 3.1 - Quality</span>
+                </mat-radio-button>
+                <mat-radio-button value="Omni 1.2 Flash" aria-checked="${window.settingsState.videoModel === 'Omni 1.2 Flash'}">
+                  <span class="label">Omni 1.2 Flash</span>
+                </mat-radio-button>
+              </mat-radio-group>
+            </div>
+          </flow-unified-settings-view>
+        </div>
+      </flow-agent-panel>
+    `;
+    c.querySelectorAll('mat-radio-button').forEach(rb => {
+      rb.onclick = () => {
+        window.settingsState.videoModel = rb.getAttribute('value');
+        renderSubpagePane();
+      };
+    });
+    c.querySelector('button.header-action').onclick = () => {
+      window.settingsState.page = 'main';
+      renderSubpagePane();
+    };
+  }
+}
+document.getElementById('tune').onclick = () => {
+  window.settingsState.page = 'main';
+  renderSubpagePane();
+};
+</script>
+"""
+
+
+@pytest.mark.asyncio
+async def test_unified_settings_subpage_video_defaults_apply_and_restore_omni(page: Page) -> None:
+    """Verifies that selecting a model via sub-page navigation inside flow-unified-settings-view works.
+
+    In flow-unified-settings-view, clicking the video defaults row navigates into a sub-page
+    containing mat-radio-button options (or similar drill-down list). Selecting Omni 1.2 Flash
+    and returning to main view updates the caption and snapshot cleanly.
+    """
+    await page.set_content(UNIFIED_SETTINGS_SUBPAGE_FIXTURE)
+    composer = aoc.AgentOnlyComposer()
+
+    snap = await composer.apply_defaults(
+        page,
+        section="video",
+        aspect_ligature="crop_9_16",
+        count=1,
+        model=VIDEO_MODEL_MENU_MATCHERS[video_api.VideoModel.OMNI_1_2_FLASH],
+        confirm="never",
+    )
+
+    assert snap.section == "video"
+    assert snap.model_text == "Veo 3.1 - Lite"
+
+    state: dict[str, Any] = await page.evaluate("window.settingsState")
+    assert state["confirm"] == "2"
+    assert state["videoModel"] == "Omni 1.2 Flash"
+    assert state["closedCount"] == 1
+    assert await page.locator(aoc.PANE).count() == 0
+
+    await composer.restore_defaults(page, snap)
+
+    restored_state: dict[str, Any] = await page.evaluate("window.settingsState")
+    assert restored_state["videoModel"] == "Veo 3.1 - Lite"
+    assert restored_state["closedCount"] == 2
+    assert await page.locator(aoc.PANE).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_unified_settings_subpage_discard_pane_closes_from_subpage(page: Page) -> None:
+    """Verifies that _discard_pane cleanly closes the panel even when located inside a sub-page."""
+    await page.set_content(UNIFIED_SETTINGS_SUBPAGE_FIXTURE)
+    composer = aoc.AgentOnlyComposer()
+
+    # Open panel and navigate into subpage
+    await page.click("#tune")
+    await page.click("#row-video")
+    state: dict[str, Any] = await page.evaluate("window.settingsState")
+    assert state["page"] == "video-defaults"
+
+    # Discard pane should pop the sub-page and close the panel
+    await composer._discard_pane(page)  # pyright: ignore[reportPrivateUsage]
+
+    assert await page.locator(aoc.PANE).count() == 0
+    closed_state: dict[str, Any] = await page.evaluate("window.settingsState")
+    assert closed_state["closedCount"] == 1
