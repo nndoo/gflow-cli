@@ -100,18 +100,31 @@ async def main() -> int:
             const panel = document.querySelector('flow-agent-panel');
             if (panel) {
                 const cands = panel.querySelectorAll(
+                    'label.radio-option, .radio-option, .radio-option-text, ' +
                     'mat-radio-button, [role="radio"], mat-button-toggle, ' +
                     'mat-list-option, mat-list-item, .mat-mdc-list-item, ' +
                     'button.defaults-row, button.model-option, ' +
                     'button.option-row, button:not(.header-action)'
                 );
                 cands.forEach(el => {
-                    const text = (el.innerText || '').trim();
+                    const cleanSpan = el.querySelector
+                        ? el.querySelector('.radio-option-text')
+                        : null;
+                    const rawText = (
+                        (cleanSpan ? cleanSpan.innerText : el.innerText) || ''
+                    ).trim();
+                    let text = rawText
+                        .replace(/radio_button_(?:un)?checked/g, '')
+                        .replace(/arrow_(?:drop_down|forward)/g, '')
+                        .split('\n')[0]
+                        .trim();
+                    if (!text) text = rawText;
                     if (text && text.length < 120) data.panelElements.push({
                         tag: el.tagName.toLowerCase(),
                         role: el.getAttribute('role') || '',
                         class: el.className || '',
                         text: text,
+                        rawText: rawText,
                         ariaChecked: el.getAttribute('aria-checked') || '',
                     });
                 });
@@ -127,12 +140,20 @@ async def main() -> int:
         if dom_info["overlays"]:
             offered = [o["text"] for o in dom_info["overlays"]]
         elif dom_info["panelElements"]:
-            keywords = ("veo", "omni", "flash", "lite", "fast", "quality", "banana", "imagen")
-            offered = [
+            radio_options = [
                 p["text"]
                 for p in dom_info["panelElements"]
-                if any(k in p["text"].lower() for k in keywords)
+                if "radio-option" in p["class"] or p["tag"] == "label"
             ]
+            if radio_options:
+                offered = radio_options
+            else:
+                keywords = ("veo", "omni", "flash", "lite", "fast", "quality", "banana", "imagen")
+                offered = [
+                    p["text"]
+                    for p in dom_info["panelElements"]
+                    if any(k in p["text"].lower() for k in keywords)
+                ]
             if not offered:
                 offered = [p["text"] for p in dom_info["panelElements"]]
 

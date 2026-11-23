@@ -43,11 +43,13 @@ import pytest
 from gflow_cli.api import image as image_api
 from gflow_cli.api import video as video_api
 from gflow_cli.api.transports import agent_only_composer as aoc
+from gflow_cli.api.transports._mc_common import ModelMenuMatcher
 from gflow_cli.api.transports.migrated_composer import (
     IMAGE_MODEL_MENU_MATCHERS,
     VIDEO_MODEL_MENU_MATCHERS,
     MigratedComposer,
 )
+from gflow_cli.errors import ConfigurationError
 
 if TYPE_CHECKING:  # pragma: no cover
     from playwright.async_api import Page
@@ -478,28 +480,50 @@ function renderSubpagePane() {
         <div class="panel-content">
           <flow-unified-settings-view>
             <div class="model-selection-list">
-              <mat-radio-group>
-                <mat-radio-button value="Veo 3.1 - Lite" aria-checked="${window.settingsState.videoModel === 'Veo 3.1 - Lite'}">
-                  <span class="label">Veo 3.1 - Lite</span>
-                </mat-radio-button>
-                <mat-radio-button value="Veo 3.1 - Fast" aria-checked="${window.settingsState.videoModel === 'Veo 3.1 - Fast'}">
-                  <span class="label">Veo 3.1 - Fast</span>
-                </mat-radio-button>
-                <mat-radio-button value="Veo 3.1 - Quality" aria-checked="${window.settingsState.videoModel === 'Veo 3.1 - Quality'}">
-                  <span class="label">Veo 3.1 - Quality</span>
-                </mat-radio-button>
-                <mat-radio-button value="Omni 1.2 Flash" aria-checked="${window.settingsState.videoModel === 'Omni 1.2 Flash'}">
-                  <span class="label">Omni 1.2 Flash</span>
-                </mat-radio-button>
-              </mat-radio-group>
+              <label class="radio-option ${window.settingsState.videoModel === 'Veo 3.1 - Lite' ? 'radio-option-selected' : ''}" data-value="Veo 3.1 - Lite">
+                <span class="radio-option-label">
+                  <mat-icon class="google-symbols">${window.settingsState.videoModel === 'Veo 3.1 - Lite' ? 'radio_button_checked' : 'radio_button_unchecked'}</mat-icon>
+                </span>
+                <span class="radio-option-text">Veo 3.1 - Lite</span>
+              </label>
+              <label class="radio-option ${window.settingsState.videoModel === 'Veo 3.1 - Fast' ? 'radio-option-selected' : ''}" data-value="Veo 3.1 - Fast">
+                <span class="radio-option-label">
+                  <mat-icon class="google-symbols">${window.settingsState.videoModel === 'Veo 3.1 - Fast' ? 'radio_button_checked' : 'radio_button_unchecked'}</mat-icon>
+                </span>
+                <span class="radio-option-text">Veo 3.1 - Fast</span>
+                <span class="radio-option-subtext">Akan dihentikan pada 5 Des</span>
+              </label>
+              <label class="radio-option ${window.settingsState.videoModel === 'Veo 3.1 - Quality' ? 'radio-option-selected' : ''}" data-value="Veo 3.1 - Quality">
+                <span class="radio-option-label">
+                  <mat-icon class="google-symbols">${window.settingsState.videoModel === 'Veo 3.1 - Quality' ? 'radio_button_checked' : 'radio_button_unchecked'}</mat-icon>
+                </span>
+                <span class="radio-option-text">Veo 3.1 - Quality</span>
+                <span class="radio-option-subtext">Akan dihentikan pada 5 Des</span>
+              </label>
+              <label class="radio-option ${window.settingsState.videoModel === 'Omni 1.2 Flash' ? 'radio-option-selected' : ''}" data-value="Omni 1.2 Flash">
+                <span class="radio-option-label">
+                  <mat-icon class="google-symbols">${window.settingsState.videoModel === 'Omni 1.2 Flash' ? 'radio_button_checked' : 'radio_button_unchecked'}</mat-icon>
+                </span>
+                <span class="radio-option-text">Omni 1.2 Flash</span>
+              </label>
+            </div>
+            <div class="subpage-controls">
+              <mat-button-toggle-group>
+                <mat-button-toggle value="16:9"><button>crop_16_9\\n16:9</button></mat-button-toggle>
+                <mat-button-toggle value="9:16"><button>crop_9_16\\n9:16</button></mat-button-toggle>
+              </mat-button-toggle-group>
+              <mat-button-toggle-group>
+                <mat-button-toggle value="1"><button>x1</button></mat-button-toggle>
+                <mat-button-toggle value="2"><button>x2</button></mat-button-toggle>
+              </mat-button-toggle-group>
             </div>
           </flow-unified-settings-view>
         </div>
       </flow-agent-panel>
     `;
-    c.querySelectorAll('mat-radio-button').forEach(rb => {
+    c.querySelectorAll('label.radio-option').forEach(rb => {
       rb.onclick = () => {
-        window.settingsState.videoModel = rb.getAttribute('value');
+        window.settingsState.videoModel = rb.getAttribute('data-value');
         renderSubpagePane();
       };
     });
@@ -572,3 +596,34 @@ async def test_unified_settings_subpage_discard_pane_closes_from_subpage(page: P
     assert await page.locator(aoc.PANE).count() == 0
     closed_state: dict[str, Any] = await page.evaluate("window.settingsState")
     assert closed_state["closedCount"] == 1
+
+
+@pytest.mark.asyncio
+async def test_unified_settings_subpage_unmatched_model_reports_clean_offered_models(
+    page: Page,
+) -> None:
+    """Verifies that an unmatched model in unified sub-page reports only clean model names in offered.
+
+    It must never include subpage navigation buttons, aspect ratio toggles, or count buttons.
+    """
+    await page.set_content(UNIFIED_SETTINGS_SUBPAGE_FIXTURE)
+    composer = aoc.AgentOnlyComposer()
+
+    with pytest.raises(ConfigurationError) as exc_info:
+        await composer.apply_defaults(
+            page,
+            section="video",
+            aspect_ligature="crop_9_16",
+            count=1,
+            model=ModelMenuMatcher("NonExistentModel"),
+            confirm="never",
+        )
+
+    err_msg = str(exc_info.value)
+    assert "video model matched 0 Agent-settings entries" in err_msg
+    assert "Veo 3.1 - Lite" in err_msg
+    assert "Omni 1.2 Flash" in err_msg
+    # Crucially, toggle buttons and back button must not pollute offered
+    assert "crop_16_9" not in err_msg
+    assert "arrow_back" not in err_msg
+    assert "x1" not in err_msg

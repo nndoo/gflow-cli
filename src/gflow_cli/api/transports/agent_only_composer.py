@@ -134,6 +134,8 @@ MENU_ITEM = (
     "[role='menuitem'], "
     "[role='option'], "
     ".cdk-overlay-pane button, "
+    "flow-agent-panel label.radio-option, "
+    "flow-agent-panel .radio-option, "
     "flow-agent-panel mat-radio-button, "
     "flow-agent-panel [role='radio'], "
     "flow-agent-panel mat-button-toggle, "
@@ -144,7 +146,8 @@ MENU_ITEM = (
     "flow-agent-panel button.model-option, "
     "flow-agent-panel button.option-row, "
     "mat-list-item, "
-    "button.model-option"
+    "button.model-option, "
+    "label.radio-option"
 )
 EDITOR = "div.ProseMirror"
 SUBMIT = "flow-generate-icon-button button"
@@ -333,7 +336,40 @@ def _cdn_uuid(src: str, kind: str) -> str | None:
 
 
 def _picker_label(text: str) -> str:
-    return text.replace("arrow_drop_down", "").replace("arrow_forward", "").strip()
+    return (
+        text.replace("arrow_drop_down", "")
+        .replace("arrow_forward", "")
+        .replace("radio_button_checked", "")
+        .replace("radio_button_unchecked", "")
+        .strip()
+    )
+
+
+def _clean_option_text(raw: str) -> str:
+    cleaned = (
+        raw.replace("radio_button_checked", "")
+        .replace("radio_button_unchecked", "")
+        .replace("arrow_drop_down", "")
+        .replace("arrow_forward", "")
+    )
+    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    # In live Flow sub-page, line 1 is the model name (later lines are deprecation notes).
+    return lines[0]
+
+
+async def _extract_candidate_text(cand: Locator) -> str:
+    text_el = cand.locator(".radio-option-text, .radio-option-label")
+    count = await text_el.count()
+    if count > 0:
+        for j in range(count):
+            txt = (await text_el.nth(j).inner_text()).strip()
+            clean = _clean_option_text(txt)
+            if clean:
+                return clean
+    raw = (await cand.inner_text()).strip()
+    return _clean_option_text(raw)
 
 
 def _is_likely_model_option(text: str) -> bool:
@@ -389,19 +425,24 @@ async def _find_overlay_model_option(
 async def _find_subpage_model_option(
     page: Page, wants: ModelMenuMatcher | str
 ) -> tuple[Locator | None, str, list[str]]:
+    # In live flow-unified-settings-view, model options are rendered as label.radio-option
     sub_candidates = page.locator(
-        "flow-agent-panel mat-radio-button, "
-        "flow-agent-panel [role='radio'], "
-        "flow-agent-panel mat-button-toggle, "
-        "flow-agent-panel mat-list-option, "
-        "flow-agent-panel mat-list-item, "
-        "flow-agent-panel [mat-list-item], "
-        "flow-agent-panel .mat-mdc-list-item, "
-        "flow-agent-panel button.defaults-row, "
-        "flow-agent-panel button.model-option, "
-        "flow-agent-panel button.option-row, "
-        "flow-agent-panel button:not(.header-action)"
+        "flow-agent-panel label.radio-option, flow-agent-panel .radio-option"
     )
+    if await sub_candidates.count() == 0:
+        sub_candidates = page.locator(
+            "flow-agent-panel mat-radio-button, "
+            "flow-agent-panel [role='radio'], "
+            "flow-agent-panel mat-button-toggle, "
+            "flow-agent-panel mat-list-option, "
+            "flow-agent-panel mat-list-item, "
+            "flow-agent-panel [mat-list-item], "
+            "flow-agent-panel .mat-mdc-list-item, "
+            "flow-agent-panel button.defaults-row, "
+            "flow-agent-panel button.model-option, "
+            "flow-agent-panel button.option-row, "
+            "flow-agent-panel button:not(.header-action)"
+        )
     count = await sub_candidates.count()
     if count == 0:
         return None, "", []
@@ -410,16 +451,35 @@ async def _find_subpage_model_option(
     for i in range(count):
         cand = sub_candidates.nth(i)
         if await cand.is_visible():
-            txt = (await cand.inner_text()).strip()
+            txt = await _extract_candidate_text(cand)
+            raw_txt = (await cand.inner_text()).strip()
             if txt:
                 sub_texts.append(txt)
-                if _model_hit(txt, wants):
+                if _model_hit(txt, wants) or (raw_txt and _model_hit(raw_txt, wants)):
                     sub_hits.append(i)
     if len(sub_hits) == 1:
         offered = [t for t in sub_texts if _is_likely_model_option(t)] or sub_texts
         return sub_candidates.nth(sub_hits[0]), sub_texts[sub_hits[0]], offered
     filtered = [t for t in sub_texts if _is_likely_model_option(t)]
     return None, "", (filtered if filtered else sub_texts)
+
+
+async def _wait_option_selected(target_item: Locator, picker: Locator) -> None:
+    if await picker.is_visible():
+        return
+    sel_deadline = time.monotonic() + RADIO_SETTLE_S
+    while time.monotonic() < sel_deadline:
+        if await picker.is_visible():
+            break
+        try:
+            cls = (await target_item.get_attribute("class")) or ""
+            txt = await target_item.inner_text()
+            aria = (await target_item.get_attribute("aria-checked")) or ""
+            if "radio-option-selected" in cls or "radio_button_checked" in txt or aria == "true":
+                break
+        except Exception:
+            break
+        await asyncio.sleep(0.05)
 
 
 async def _discover_model_option(
@@ -627,6 +687,7 @@ class AgentOnlyComposer:
             )
 
         await _click(target_item, f"the {section} model {target_text!r}")
+        await _wait_option_selected(target_item, picker)
         await _ensure_picker_visible(page, picker)
 
         settle_deadline = time.monotonic() + RADIO_SETTLE_S
