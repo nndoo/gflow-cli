@@ -8,15 +8,16 @@ KeyErrors leak.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+import structlog
+
+log = structlog.get_logger(__name__)
+
 if TYPE_CHECKING:
     from gflow_cli.errors import GFlowError
-
-_log = logging.getLogger(__name__)
 
 
 GenerationPhase = Literal["submit_attempted", "remote_started"]
@@ -73,12 +74,21 @@ class CreditsInfo:
         is not a non-negative integer (e.g. Flow wrapped the balance in a nested list or
         shifted its position in a server-side update).
 
+        Since 2026-11-23 Flow also serialises a zero balance as ``null`` at both
+        slots: adminmandala at 0 credits reads
+        ``[None, 3, 8, 1, None, None, [1795445142, 704459000]]`` while azoolabit at 50
+        reads ``[50, 3, 8, 1, None, 50, [1795446476, 95021000]]``.  ``None`` at ``[0]``
+        is therefore 0 only when ``[5]`` is ``None`` too; any other ``None`` at ``[0]``
+        with a usable ``[5]`` reads ``[5]``.
+
         Debug logging emits only payload *structure* (types and lengths) — never values,
         cookies, or tokens — so it is safe to leave in production builds.  It fires only
         when ``[0]`` is not the expected shape, which means it is silent on every healthy
         read.
         """
-        items = cast("list[object]", payload) if isinstance(payload, list) else []
+        # Before the isinstance narrowing below: payload is still plain object here.
+        payload_type = type(payload).__name__
+        items: list[object] = cast("list[object]", payload) if isinstance(payload, list) else []
         value = items[0] if items else None
 
         def _is_valid(v: object) -> bool:
@@ -87,26 +97,29 @@ class CreditsInfo:
         if _is_valid(value):
             return cls(credits=cast(int, value))
 
-        # [0] is not a non-negative integer — log structure for diagnosis then try [5].
-        # `payload` is typed `object` (the widest safe type for a parser); accessing
-        # __class__ on it triggers reportUnknownMemberType in strict mode.  The noqa
-        # suppresses ruff's B010; the type: ignore suppresses pyright.  The log line
-        # emits only class names — never values, tokens, or cookies.
-        _payload_cls: str = payload.__class__.__name__  # type: ignore[reportUnknownMemberType]
-        _item_cls: list[str] = [x.__class__.__name__ for x in items[:8]]  # type: ignore[reportUnknownMemberType]
-        _log.debug(
-            "nzlxg [0] not a non-negative integer — trying fallback; "
-            "payload type=%s len=%s element_types=%s",
-            _payload_cls,
-            len(items),
-            _item_cls,
-        )
-
         fallback = items[5] if len(items) > 5 else None
+        if value is None and len(items) > 5 and fallback is None:
+            # Live 2026-11-23: adminmandala at 0 credits reads
+            # [None, 3, 8, 1, None, None, [epoch, nanos]] — Flow nulls a zero
+            # balance at both slots. Null at both slots is 0, never an error.
+            # The len(items) > 5 guard matters: a short payload (or a non-list)
+            # has no [5] at all, so its None is absence, not a zero balance.
+            return cls(credits=0)
+
         if _is_valid(fallback):
-            _log.debug("nzlxg balance recovered from [5]: type=%s", type(fallback).__name__)
+            log.debug(
+                "credits.nzlxg_fell_back_to_slot5",
+                slot0_type=type(value).__name__ if items else None,
+            )
             return cls(credits=cast(int, fallback))
 
+        log.debug(
+            "credits.nzlxg_unparseable",
+            payload_type=payload_type,
+            length=len(items) if isinstance(payload, list) else None,
+            slot0_type=type(value).__name__ if items else None,
+            slot5_type=type(fallback).__name__ if len(items) > 5 else None,
+        )
         msg = "unexpected nzlxg reply shape: [0] must be a non-negative integer"
         raise ValueError(msg)
 

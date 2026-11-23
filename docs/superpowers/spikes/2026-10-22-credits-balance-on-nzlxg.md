@@ -113,3 +113,18 @@ a non-zero Veo balance) is needed before the parser can be called general.
 - `gflow auth status --profile denon82` reported "signed in to Google, but not to the Flow app"
   minutes before this run, while the browser reached the app in both loads. That disagreement
   is outside this spike's question and is recorded here, not explained.
+
+## Addendum 2026-11-23 — a zero balance now arrives as `null` at both slots
+
+Live capture (0 credits): adminmandala at 0 credits reads
+`[None, 3, 8, 1, None, None, [1795445142, 704459000]]` while azoolabit at 50
+reads `[50, 3, 8, 1, None, 50, [1795446476, 95021000]]`. Flow nulls a zero
+balance at both `[0]` and `[5]`; the old parser rejected the null form, so
+every balance read failed (WireFormatError, exit 7) and the factory balance
+gate refused all live generation.
+
+`CreditsInfo.from_nzlxg` now reads `None` at `[0]` as 0 only when `[5]` is
+`None` too. When `[0]` is unusable but `[5]` holds a non-negative integer,
+the balance reads from `[5]` instead. A reply neither slot can answer is
+still rejected, and the rejection logs the payload's type and structure
+only, never its values.

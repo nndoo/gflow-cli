@@ -13,6 +13,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from structlog.testing import capture_logs
 
 from gflow_cli.api.client import FlowApiClient
 from gflow_cli.api.dto import CreditsInfo
@@ -96,9 +97,41 @@ def test_a_reply_without_a_non_negative_balance_is_rejected(payload: object) -> 
         CreditsInfo.from_nzlxg(payload)
 
 
+def test_a_zero_balance_arrives_as_null_at_both_balance_slots() -> None:
+    # Live 2026-11-23: adminmandala at 0 credits reads
+    # [None, 3, 8, 1, None, None, [epoch, nanos]] while azoolabit at 50 reads
+    # [50, 3, 8, 1, None, 50, [epoch, nanos]] — Flow nulls a zero balance.
+    assert CreditsInfo.from_nzlxg(
+        [None, 3, 8, 1, None, None, [1795445142, 704459000]]
+    ) == CreditsInfo(credits=0)
+
+
+def test_an_unparseable_reply_logs_only_its_type_and_structure() -> None:
+    with capture_logs() as logs:
+        with pytest.raises(ValueError, match="nzlxg"):
+            CreditsInfo.from_nzlxg(["x"])
+    assert [e["event"] for e in logs] == ["credits.nzlxg_unparseable"]
+    event = logs[0]
+    assert event["payload_type"] == "list"
+    assert event["length"] == 1
+    assert event["slot0_type"] == "str"
+    assert event["slot5_type"] is None
+    assert 5 not in event.values() and "x" not in event.values()
+
+
+def test_falling_back_to_the_second_balance_is_logged() -> None:
+    with capture_logs() as logs:
+        assert CreditsInfo.from_nzlxg([None, 3, 8, 1, None, 50, [1795445142, 0]]) == CreditsInfo(
+            credits=50
+        )
+    assert [e["event"] for e in logs] == ["credits.nzlxg_fell_back_to_slot5"]
+    assert logs[0]["slot0_type"] == "NoneType"
+
+
 def test_a_reply_where_both_index_zero_and_five_are_invalid_is_rejected() -> None:
     # Neither candidate holds a valid balance — must still raise, never coerce to 0.
-    payload = [None, 3, 8, 1, None, None, [1793000000, 0]]
+    # (Null at both slots is NOT this case: that is a zero balance, tested above.)
+    payload = [None, 3, 8, 1, None, "x", [1793000000, 0]]
     with pytest.raises(ValueError, match="nzlxg"):
         CreditsInfo.from_nzlxg(payload)
 
