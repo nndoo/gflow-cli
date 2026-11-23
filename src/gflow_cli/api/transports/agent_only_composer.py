@@ -1238,9 +1238,12 @@ class AgentOnlyComposer:
             await page.keyboard.press("ControlOrMeta+a")
             await page.keyboard.press("Delete")
             if reference_entity_names:
-                await self.attach_character_entities(
-                    page, names=reference_entity_names, clear=False
-                )
+                # One character per attach call on a clean editor: a multi-name single
+                # call tripped the ordering check when a chip was already present
+                # (spike 2026-11-23), so the names go in one at a time until the
+                # clear/ordering flakiness is fixed and re-measured.
+                for name in reference_entity_names:
+                    await self.attach_character_entities(page, names=(name,), clear=False)
                 await page.evaluate(_AGENT_CARET_TO_END_JS, EDITOR)
                 await page.keyboard.insert_text(f" {directive}")
             else:
@@ -1525,8 +1528,10 @@ def unported_image(request: GenerateImageRequest) -> str | None:
 def unported_video(request: GenerateVideoRequest) -> str | None:
     if request.mode is not Mode.T2V:
         return f"{request.mode.value}"
-    if request.reference_entities:
-        return "character references"
+    if len(request.reference_entities) > len(request.reference_entity_names):
+        # An id alone has nothing to type in the `@` picker; the agent-only composer
+        # attaches characters by name (#723), so this is refused rather than dropped.
+        return "a character given by entity id without a name"
     if request.count != 1:
         return "more than one video per request"
     if request.aspect not in _VIDEO_ASPECT_LABEL:

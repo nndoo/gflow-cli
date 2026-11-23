@@ -367,9 +367,11 @@ async def run_video(
 
     t2v, i2v from local start (and end) frames (uploaded through the editor and
     bound on the Start/End chips by file name), and r2v from local ``--ref``
-    files. A frame or reference given by UUID / ``@Name`` is not ported yet. The
-    project is created by ``FlowApiClient`` before this runs (#864), so reaching
-    here without one means a caller bypassed the client.
+    files. T2V with named character references runs on the agent-only composer
+    (attached by name through the ``@`` picker, #723); the classic composer still
+    refuses them. A frame or reference given by UUID / ``@Name`` is not ported yet
+    on the classic composer. The project is created by ``FlowApiClient`` before this
+    runs (#864), so reaching here without one means a caller bypassed the client.
     """
     from gflow_cli.api.transports import agent_only_composer as agent  # noqa: PLC0415 - cycle
 

@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`gflow video t2v` with an `@Name` mention no longer stalls when Flow serves the account from `flow.google.com`.** Mention resolution read the character catalog through the labs TRPC route only (`migrated_read=False`); that route now answers 401 for those accounts, so every `@Name` degraded to a by-name mention and the run hung in the browser attach. Mention resolution now reads the catalog the same way `gflow character list` does (labs TRPC first, migrated project read on 401/404), so mentions resolve to their entity ids.
 
+- **Text-to-video with named characters now runs on the agent-only composer (#799/#723).** `gflow video t2v` with `@Name` mentions (or `--reference-entity` paired with `--reference-entity-name`) used to refuse exit 36 on accounts Flow serves from `flow.google.com`, on the assumption that the agent-only composer cannot attach characters. A spike (2026-11-23) measured that it can: the driver's `@` picker commits a character chip carrying the right entity id, and a manual run in the same shape generated. The agent-only gate now accepts T2V with named character references (an id without its name still refuses), and `_submit` attaches one character per call on a clean editor — the multi-name single call tripped the ordering check when a chip was already present. The classic composer still refuses T2V characters (exit 36).
+
 ## [0.103.0] — 2026-11-19
 
 ### Added

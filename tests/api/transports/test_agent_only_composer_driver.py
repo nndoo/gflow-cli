@@ -1271,6 +1271,79 @@ async def test_a_names_only_character_video_routed_to_agent_composer_succeeds(
     page.reload.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_named_character_entities_video_routed_to_agent_composer_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T2V with named character entities routes to run_agent_video on the agent-only composer
+    instead of refusing exit 36 (#799): the driver attaches them by name through the @
+    picker (spike 2026-11-23)."""
+    from gflow_cli.api.transports import migrated_composer as mc
+
+    async def agent_only(*_: Any, **__: Any) -> str:
+        return "agent_only"
+
+    async def fake_video(*_: Any, **kw: Any) -> str:
+        return f"video:{kw['project_id']}"
+
+    from gflow_cli.api.transports import _mc_editor_gate
+
+    monkeypatch.setattr(mc.MigratedComposer, "ensure_editor", agent_only)
+    monkeypatch.setattr(_mc_editor_gate, "AGENT_ONLY_RELOAD_WAIT_S", 0)
+    monkeypatch.setattr(aoc, "run_agent_video", fake_video)
+    page = MagicMock(url="https://flow.google.com/project/p1", reload=AsyncMock())
+
+    result = await mc.run_video(
+        page,
+        video_api.GenerateVideoRequest(
+            prompt="x",
+            reference_entities=("e1",),
+            reference_entity_names=("Ada",),
+        ),
+        project_id="p1",
+        save=AsyncMock(),
+        poll_timeout_s=5,
+        download=False,
+        on_started=None,
+    )
+    assert result == "video:p1"
+    page.reload.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_named_character_entities_video_routed_to_classic_composer_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The classic composer still cannot attach T2V characters: the same request refuses
+    exit 36 there (#639), via the _unported_form guard that survives the agent-only
+    relaxation."""
+    from gflow_cli.api.transports import migrated_composer as mc
+
+    async def classic(*_: Any, **__: Any) -> str:
+        return "classic"
+
+    from gflow_cli.api.transports import _mc_editor_gate
+
+    monkeypatch.setattr(mc.MigratedComposer, "ensure_editor", classic)
+    monkeypatch.setattr(_mc_editor_gate, "AGENT_ONLY_RELOAD_WAIT_S", 0)
+    page = MagicMock(url="https://flow.google.com/project/p1", reload=AsyncMock())
+    with pytest.raises(FlowHostMigratedError, match="character"):
+        await mc.run_video(
+            page,
+            video_api.GenerateVideoRequest(
+                prompt="x",
+                reference_entities=("e1",),
+                reference_entity_names=("Ada",),
+            ),
+            project_id="p1",
+            save=AsyncMock(),
+            poll_timeout_s=5,
+            download=False,
+            on_started=None,
+        )
+    page.reload.assert_not_called()
+
+
 # --- character mentions in agent-only composer (#723) --------------------------------------
 
 
@@ -1389,7 +1462,30 @@ async def test_agent_only_unported_video_accepts_names_only() -> None:
     assert aoc.unported_video(req_names) is None
 
     req_ids = video_api.GenerateVideoRequest(prompt="x", reference_entities=("e1",))
-    assert aoc.unported_video(req_ids) == "character references"
+    assert aoc.unported_video(req_ids) == "a character given by entity id without a name"
+
+
+@pytest.mark.asyncio
+async def test_agent_only_unported_video_accepts_named_character_entities() -> None:
+    """T2V with named character entities is portable on the agent-only composer (#799/#723):
+    the driver attaches them by name through the @ picker (spike 2026-11-23), so the
+    gate must not refuse them. An id without its name still refuses: the picker has
+    nothing to type."""
+    req = video_api.GenerateVideoRequest(
+        prompt="x",
+        reference_entities=("e1", "e2"),
+        reference_entity_names=("Ada", "Bob"),
+    )
+    assert aoc.unported_video(req) is None
+
+    req_id_without_name = video_api.GenerateVideoRequest(
+        prompt="x",
+        reference_entities=("e1", "e2"),
+        reference_entity_names=("Ada",),
+    )
+    assert (
+        aoc.unported_video(req_id_without_name) == "a character given by entity id without a name"
+    )
 
 
 @pytest.mark.asyncio
@@ -1531,6 +1627,39 @@ async def test_agent_only_submit_attaches_character_and_appends_directive() -> N
     assert len(page.chips) == 1
     assert page.chips[0]["reference_type"] == "entity"
     assert "Make me a video" in page.inserted_text[-1]
+    assert page.submit_clicks == 1
+
+
+@pytest.mark.asyncio
+async def test_agent_only_submit_attaches_each_character_in_its_own_call() -> None:
+    """_submit attaches one character per attach_character_entities call on a clean editor.
+    A multi-name single call tripped the ordering check when a chip was already present
+    (spike 2026-11-23), so the names go in one at a time until the clear/ordering
+    flakiness is fixed and re-measured."""
+    page = FakeAgentOnlyEntityPage(options=[("Ada", "ent-ada"), ("Bob", "ent-bob")])
+    composer = aoc.AgentOnlyComposer()
+    calls: list[tuple[str, ...]] = []
+    orig = composer.attach_character_entities
+
+    async def spy(
+        pg: Any,
+        *,
+        names: tuple[str, ...],
+        entity_ids: tuple[str, ...] = (),
+        clear: bool = True,
+    ) -> tuple[str, ...]:
+        calls.append(names)
+        return await orig(pg, names=names, entity_ids=entity_ids, clear=clear)
+
+    composer.attach_character_entities = spy  # type: ignore[method-assign]
+    await composer._submit(  # pyright: ignore[reportPrivateUsage]
+        page,
+        "Make me a video of Ada and Bob dancing in a 16:9 aspect ratio.",
+        reference_entity_names=("Ada", "Bob"),
+    )
+    assert calls == [("Ada",), ("Bob",)]
+    assert page.committed == ["Ada", "Bob"]
+    assert len(page.chips) == 2
     assert page.submit_clicks == 1
 
 

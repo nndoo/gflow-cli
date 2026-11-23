@@ -55,9 +55,11 @@ _MIGRATED_VIDEO = (
     "flow.google.com: gflow drives text-to-video, image-to-video from a local "
     "--initial-frame, reference-to-video from local --ref files and/or a named "
     "character, and a single-segment extend. Not driven there yet (exit 36): a frame "
-    "or reference given by Flow media UUID or @Name, character references on t2v/i2v, "
-    "a character given by id without a name, and extend chains, --scene and --seed. "
-    "The agent-only composer (#799) takes text-to-video only."
+    "or reference given by Flow media UUID or @Name, character references on i2v and "
+    "on t2v on the classic composer, a character given by id without a name, and "
+    "extend chains, --scene and --seed. "
+    "The agent-only composer (#799) takes text-to-video, including with named "
+    "character references (#723)."
 )
 _AUTO_PREFIX = (
     "Host is chosen per request from what Flow serves (not checked here). "

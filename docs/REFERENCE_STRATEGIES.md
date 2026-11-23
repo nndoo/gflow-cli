@@ -85,7 +85,9 @@ On an account Flow serves from `flow.google.com`, `image t2i` and `image i2i` ta
 mention (`@Name` or `--reference-entity`) through the composer's own `@` picker. **Video:**
 local-file `video r2v` takes a character there with `--reference-entity` paired with
 `--reference-entity-name` (#723; `gflow character list` reads both on `flow.google.com`, #987).
-Other video modes still refuse characters (exit 36). A video `@Name` resolves
+T2V takes a named character too, on the agent-only composer only (#799): the driver attaches
+it by name through the `@` picker (spike 2026-11-23). Other video modes still refuse characters
+(exit 36), and the classic composer still refuses T2V characters. A video `@Name` resolves
 through the same character read as `gflow character list` (labs TRPC first,
 migrated project read on 401/404), so it carries the character's entity id.
 

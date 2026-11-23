@@ -503,13 +503,18 @@ def _unported_form(request: GenerateVideoRequest) -> str | None:
     2026-09-15 (scripts/dev/spike_migrated_end_frame.py): two empty chips, Start
     and End by text, and clicking the End chip opens the library picker."""
     # Character entities are a different attach surface (a chip with an entity_id, in a
-    # different wire slot), ported for r2v only. This check is MODE-INDEPENDENT and must stay
-    # ahead of every early return (#716): it used to live inside the R2V branch, so a
-    # t2v request returned `None` here without its entities ever being inspected, and
-    # nothing downstream attaches one — `attach_start_frame` is i2v-only,
-    # `attach_references` is r2v-only, the `read_chips` verification is r2v-only. The
-    # result was a BILLED generation with the entity silently dropped, which is strictly
-    # worse than exit 36: the refusal is free and the clip is a stranger.
+    # different wire slot), ported for r2v only on the classic composer. This check is
+    # MODE-INDEPENDENT and must stay ahead of every early return (#716): it used to live
+    # inside the R2V branch, so a t2v request returned `None` here without its entities
+    # ever being inspected, and nothing downstream attaches one — `attach_start_frame` is
+    # i2v-only, `attach_references` is r2v-only, the `read_chips` verification is r2v-only.
+    # The result was a BILLED generation with the entity silently dropped, which is strictly
+    # worse than exit 36: the refusal is free and the clip is a stranger. On the
+    # agent-only composer the premise does not hold — `attach_character_entities`
+    # attaches T2V characters by name through the `@` picker (#723, spike 2026-11-23) —
+    # so this gate now guards the classic path only: `run_video` raises it after the
+    # surface is known, and skips the pre-page raise when the agent-only composer
+    # takes the form (its `unported_video` returns None for named characters).
     #
     # `migrated_can_serve` also refuses on `reference_entities`, but it only feeds
     # `prefer_migrated`, and an account Flow has already moved is routed by its URL

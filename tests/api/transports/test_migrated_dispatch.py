@@ -329,6 +329,11 @@ async def test_run_video_refuses_character_references_outside_r2v() -> None:
     ``prefer_migrated``, and an account Flow has already moved is routed by its URL
     without consulting it — so the refusal was unreachable for exactly the accounts
     that needed it.
+
+    The bare-id case below still refuses. A T2V request whose entities are paired
+    with names no longer refuses here: the agent-only composer attaches them by name
+    (see ``test_agent_only_composer_driver.py``), and only the classic composer keeps
+    this refusal.
     """
     with pytest.raises(FlowHostMigratedError, match="character references"):
         await _run(_req(mode=Mode.T2V, reference_entities=("ent-1",)))
