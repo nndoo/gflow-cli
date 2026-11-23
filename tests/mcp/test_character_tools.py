@@ -310,12 +310,15 @@ def test_mcp_doc_character_list_states_flow_google_com_mention_limits() -> None:
         )
         assert "can be used as an `@Name` mention" not in line, rel
         for phrase in (
-            "migrated_read=False",
+            "migrated project read on 401/404",
+            "resolves to its `entity_id`",
             "first whitespace-delimited word",
-            "exit 29",
-            "mention index unavailable",
             "video r2v",
             "reference_entities",
             "reference_entity_names",
         ):
             assert phrase in line, f"{rel} gflow_character_list line lacks {phrase!r}"
+        # The labs TRPC-only read is retired: the doc must not still claim
+        # mentions keep it, nor that video @Name is unsupported.
+        for stale in ("migrated_read=False", "not supported there yet", "exit 29"):
+            assert stale not in line, f"{rel} gflow_character_list line still says {stale!r}"

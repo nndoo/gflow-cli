@@ -116,9 +116,13 @@ class AssetIndex:
         entities: list[Any] = []
         characters_unavailable = False
         try:
-            # Slice 2 keeps @Name mention resolution on the pre-branch read;
-            # slice 5 enables flow.google.com character mention resolution with a billed e2e.
-            entities = list(await client.list_characters(project_id, migrated_read=False))
+            # The same read `gflow character list` uses: the labs TRPC route
+            # first, with the migrated project read as the fallback when it
+            # answers 401/404. The labs route is retired for
+            # flow.google.com-served accounts (it answers 401), so the
+            # TRPC-only read left every @Name mention unresolved and the run
+            # stalled in the browser attach.
+            entities = list(await client.list_characters(project_id))
         except GFlowError as exc:
             if not characters_optional:
                 raise MentionIndexUnavailableError(

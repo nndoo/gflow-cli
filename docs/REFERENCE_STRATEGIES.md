@@ -85,14 +85,14 @@ On an account Flow serves from `flow.google.com`, `image t2i` and `image i2i` ta
 mention (`@Name` or `--reference-entity`) through the composer's own `@` picker. **Video:**
 local-file `video r2v` takes a character there with `--reference-entity` paired with
 `--reference-entity-name` (#723; `gflow character list` reads both on `flow.google.com`, #987).
-Other video modes still refuse characters (exit 36), and a video `@Name` exits 29 because
-`@Name` mention resolution does not query the `flow.google.com` character catalog yet.
+Other video modes still refuse characters (exit 36). A video `@Name` resolves
+through the same character read as `gflow character list` (labs TRPC first,
+migrated project read on 401/404), so it carries the character's entity id.
 
-- **No catalog needed for image `@Name`.** On `flow.google.com`, `@Name` mention resolution keeps
-  the pre-#987 labs catalog probe (`migrated_read=False`); when that character source fails, an image mention that matches no media asset
+- **The catalog is read for `@Name`.** On `flow.google.com`, `@Name` mention resolution reads the character catalog the same way `gflow character list` does; when that character source fails, an image mention that matches no media asset
   becomes a character **by name**: the name is the **first word after `@`**. A character
-  whose name has several words needs the catalog to resolve, so use a one-word name on that
-  host. The name stays in the prompt as plain text (`@Sussy cooks` → chip + `Sussy cooks`).
+  whose name has several words resolves when the catalog is readable; only when the
+  catalog fails does the by-name fallback take the first word. The name stays in the prompt as plain text (`@Sussy cooks` → chip + `Sussy cooks`).
   Media mentions resolve as before.
 - **The option titled exactly the name is picked, not the first option.** The picker
   lists characters and media in one list, and their DOM is identical apart from a translated

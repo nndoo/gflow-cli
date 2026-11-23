@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from gflow_cli.errors import (
+    AuthExpiredError,
     ConfigurationError,
     DataStoreError,
     MentionIndexUnavailableError,
@@ -299,6 +300,19 @@ async def test_build_for_project_empty_sources_are_not_unavailable() -> None:
 # ---------- #723: character catalog unreadable → by-name character (image path) ----------
 
 
+class _Labs401ThenMigratedCharacterClient:
+    """Fake FlowApiClient modelling the retired labs character route: the
+    TRPC-only read (``migrated_read=False``) answers 401, while the default
+    read falls back to the migrated project read and returns the characters
+    — the split `gflow character list` (default) and the old mention path
+    (TRPC-only) take."""
+
+    async def list_characters(self, project_id: str, *, migrated_read: bool = True) -> list[Any]:
+        if not migrated_read:
+            raise AuthExpiredError(detail="HTTP 401", status=401)
+        return [_character("e1-uuid-12345678901234567890123456", "Sussy", ("wf-1",))]
+
+
 async def test_build_for_project_tolerates_a_character_outage_when_allowed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -310,6 +324,23 @@ async def test_build_for_project_tolerates_a_character_outage_when_allowed(
     )
     assert index.characters_unavailable is True
     assert index.entries == []
+
+
+async def test_build_for_project_reads_characters_via_migrated_read_when_labs_route_401s(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The labs TRPC character route now answers 401 on flow.google.com-served
+    # accounts; mention resolution must use the same read `gflow character
+    # list` uses (TRPC first, migrated fallback on 401/404) instead of the
+    # TRPC-only read, or every @Name mention degrades to by-name and the run
+    # stalls in the browser attach.
+    monkeypatch.setattr("gflow_cli.data.queries.list_project_media_assets", lambda **_: [])
+    index = await AssetIndex.build_for_project(
+        _Labs401ThenMigratedCharacterClient(), "proj-1", characters_optional=True
+    )
+    assert index.characters_unavailable is False
+    assert [e.name for e in index.entries] == ["Sussy"]
+    assert index.entries[0].id == "e1-uuid-12345678901234567890123456"
 
 
 def test_unmatched_mention_becomes_a_character_by_its_first_word() -> None:
@@ -439,12 +470,16 @@ async def test_resolve_and_apply_keeps_a_passed_character_single(
 
 
 @pytest.mark.parametrize("flow_host", ["auto", "flow.google.com"])
-async def test_resolve_and_apply_on_flow_google_com_keeps_character_catalog_unavailable(
+async def test_resolve_and_apply_on_flow_google_com_resolves_via_migrated_read(
     tmp_path: Any,
     monkeypatch: pytest.MonkeyPatch,
     flow_host: str,
 ) -> None:
-    """Slice 2 must not change @Name mention routing on flow.google.com (slice 5 owns that)."""
+    """@Name mention resolution uses the same character read as `gflow character
+    list` (TRPC first, migrated fallback on 401/404): the labs TRPC route now
+    answers 401 on flow.google.com-served accounts, and the old TRPC-only read
+    degraded every mention to by-name and stalled the run in the browser
+    attach. With the fallback the mention resolves to its entity id."""
     from unittest.mock import AsyncMock, MagicMock, patch
 
     from gflow_cli.api.character import Character
@@ -486,7 +521,7 @@ async def test_resolve_and_apply_on_flow_google_com_keeps_character_catalog_unav
             project_id="proj-1",
             tool_specs=(),
         )
-        assert img_out.reference_entities == ()
+        assert img_out.reference_entities == ("00000000-0000-4000-8000-000000000004",)
         assert img_out.reference_entity_names == ("Sussy",)
         assert img_out.prompt == "Sussy cocinando"
 
@@ -497,8 +532,8 @@ async def test_resolve_and_apply_on_flow_google_com_keeps_character_catalog_unav
             project_id="proj-1",
             tool_specs=(),
         )
-        assert video_out.reference_entities == ()
+        assert video_out.reference_entities == ("00000000-0000-4000-8000-000000000004",)
         assert video_out.reference_entity_names == ("Sussy",)
         assert video_out.prompt == "Sussy runs"
 
-        migrated_read.assert_not_awaited()
+        assert migrated_read.await_count == 2

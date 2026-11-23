@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`gflow video t2v` with an `@Name` mention no longer stalls when Flow serves the account from `flow.google.com`.** Mention resolution read the character catalog through the labs TRPC route only (`migrated_read=False`); that route now answers 401 for those accounts, so every `@Name` degraded to a by-name mention and the run hung in the browser attach. Mention resolution now reads the catalog the same way `gflow character list` does (labs TRPC first, migrated project read on 401/404), so mentions resolve to their entity ids.
+
 ## [0.103.0] — 2026-11-19
 
 ### Added
