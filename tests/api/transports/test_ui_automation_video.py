@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import itertools
 import json
 from pathlib import Path
@@ -4151,3 +4152,13 @@ class TestSelectExistingAssetNameResolver:
         )
 
         assert select.await_args.kwargs["name_resolver"] is resolver
+
+
+def test_transport_generate_video_poll_timeout_default_is_1200() -> None:
+    """Transport poll budget matches the client default (1200 s).
+
+    Flow generations now need >600 s of polling; veo-lite clips died at
+    ~600 s with TransportTimeoutError (exit 9) on 2026-11-25.
+    """
+    params = inspect.signature(UiAutomationTransport.generate_video).parameters
+    assert params["poll_timeout_s"].default == 1200.0

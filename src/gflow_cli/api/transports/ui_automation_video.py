@@ -222,7 +222,12 @@ class VideoGenerationMixin(FrameAttachMixin):
         request: GenerateVideoRequest,
         project_id: str | None = None,
         out_dir: Path | None = None,
-        poll_timeout_s: float = 600.0,
+        # 2026-11-25: Flow generations now need >600 s of polling — veo-lite
+        # clips died at ~600 s with TransportTimeoutError (exit 9) on
+        # 2026-11-25, so the poll budget is 1200 s. Matches the
+        # FlowApiClient.generate_video default; auth/login timeouts are
+        # untouched.
+        poll_timeout_s: float = 1200.0,
         download: bool = True,
         on_started: VideoStartedCallback | None = None,
         name_resolver: Callable[[str], str | None] | None = None,

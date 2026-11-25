@@ -6,6 +6,7 @@ End-to-end live tests against the real Flow API live in
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -665,6 +666,17 @@ async def test_generate_video_delegates_to_transport(
         )
 
     assert result.status.media_id == "media-1"
+
+
+def test_generate_video_poll_timeout_default_is_1200() -> None:
+    """Poll budget is 1200 s: Flow generations now need >600 s of polling.
+
+    veo-lite clips died at ~600 s with TransportTimeoutError (exit 9) on
+    2026-11-25, so the client default was raised from 600.0. The CLI never
+    passes poll_timeout_s, so this default is what `video t2v` actually uses.
+    """
+    params = inspect.signature(FlowApiClient.generate_video).parameters
+    assert params["poll_timeout_s"].default == 1200.0
 
 
 @pytest.mark.asyncio
