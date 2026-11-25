@@ -176,9 +176,13 @@ _CONFIRM_VALUE = {"always": "1", "never": "2"}
 _VIDEO_ROUTE = "agent-only:video"
 
 POLL_S = 1.0
+#: How long a submit click gets to show a started turn (editor cleared, stop button,
+#: a live gate, or a pending clip). Measured 2026-11-25: a landed submit clears the
+#: editor and shows the stop button immediately; the credit gate follows at ~10 s.
+SUBMIT_LAND_S = 5.0
 #: Least seconds between two project-listing reads for one clip (#1354): each opens a tab.
 LISTING_RETRY_S = 10.0
-#: An image turn that ends with no gate and no tile for this long made nothing.
+#: A turn that ends with no gate and no result for this long made nothing.
 IDLE_S = 20.0
 #: How long an approved gate gets to turn `.read-only` before a re-count.
 GATE_SETTLE_S = 10.0
@@ -944,6 +948,7 @@ class AgentOnlyComposer:
                     f"of submit (approvals={run.approvals})"
                     + (
                         f"; last poll: {run.lookup}; pending seen: {run.saw_pending}; "
+                        f"in-flight seen: {run.saw_in_flight}; "
                         f"listing reads: {run.listing_reads}"
                         if run.kind == "video"
                         else ""
@@ -1254,6 +1259,92 @@ class AgentOnlyComposer:
                 raise UiSelectorDriftError(detail=f"agent-only composer: submit ({SUBMIT}) missing")
         await _click(submit, "submit", timeout_ms=5000)
 
+    async def _confirm_submit_landed(self, page: Page, run: _Run) -> None:
+        """Prove the submit click started a turn; re-click once only if it plainly did not.
+
+        A landed submit clears the editor and swaps the generate button for the stop
+        button (measured 2026-11-25); the credit gate follows seconds later. If the
+        editor still holds the directive, the generate button is still enabled, and no
+        turn/gate/pending clip appeared, the click did not send — clicking once more
+        cannot duplicate a turn that never started. Anything else is after-submit
+        unknown and stops the run instead of polling a dead turn for the full budget.
+        """
+        for attempt in range(2):
+            deadline = time.monotonic() + SUBMIT_LAND_S
+            while True:
+                if await self._submit_landed(page, run):
+                    run.submit_landed = True
+                    return
+                if time.monotonic() >= deadline:
+                    break
+                await asyncio.sleep(POLL_S)
+            if attempt == 0 and await self._submit_still_waiting(page):
+                submit = page.locator(SUBMIT).last
+                try:
+                    await submit.click(timeout=5000)
+                except PlaywrightError as exc:
+                    if await self._submit_landed(page, run):
+                        run.submit_landed = True
+                        return
+                    raise FlowAgentUiError(
+                        detail=(
+                            "agent-only composer: the submit did not start an agent turn "
+                            "and could not be clicked again"
+                        ),
+                        retryable=False,
+                        remediation_hint=_AFTER_SUBMIT_HINT,
+                    ) from exc
+                log.info("migrated.agent_only.submit_reclicked", kind=run.kind)
+                continue
+            break
+        raise FlowAgentUiError(
+            detail=(
+                "agent-only composer: the submit did not start an agent turn "
+                "(no cleared editor, in-flight turn, credit gate, or pending clip "
+                f"within {SUBMIT_LAND_S:.0f}s)"
+            ),
+            retryable=False,
+            remediation_hint=_AFTER_SUBMIT_HINT,
+        )
+
+    async def _submit_landed(self, page: Page, run: _Run) -> bool:
+        if await page.locator(IN_FLIGHT).count():
+            run.saw_in_flight = True
+            return True
+        if await page.locator(LIVE_GATE).count() > run.baseline_gates:
+            return True
+        editor_text = await self._editor_text(page)
+        if editor_text is not None and not editor_text.strip():
+            return True
+        if run.kind == "video":
+            state = await page.evaluate(_VIDEO_JS)
+            if state["pending"]:
+                run.saw_pending = True
+                return True
+        return False
+
+    async def _submit_still_waiting(self, page: Page) -> bool:
+        editor_text = await self._editor_text(page)
+        if editor_text is None or not editor_text.strip():
+            return False
+        submit = page.locator(SUBMIT).last
+        if not await submit.count():
+            return False
+        try:
+            return await submit.is_enabled()
+        except PlaywrightError:
+            return False
+
+    @staticmethod
+    async def _editor_text(page: Page) -> str | None:
+        editor = page.locator(EDITOR).last
+        if not await editor.count():
+            return None
+        try:
+            return await editor.inner_text(timeout=1000)
+        except PlaywrightError:
+            return None
+
     async def generate(
         self,
         page: Page,
@@ -1277,9 +1368,10 @@ class AgentOnlyComposer:
             baseline, baseline_head = await self._any_uuids(page), None
         submitted_at = time.time()
         await self._submit(page, directive, reference_entity_names=reference_entity_names)
-        log.info("migrated.agent_only.submitted", kind=kind, count=count)
         run = _Run(kind, budget_s, time.monotonic() + budget_s, baseline_gates, count, submitted_at)
         run.seen_before = frozenset(baseline)
+        await self._confirm_submit_landed(page, run)
+        log.info("migrated.agent_only.submitted", kind=kind, count=count)
         if kind == "video":
             return await self._await_video(
                 page, run, count, baseline, baseline_head, on_first_media, read_listing
@@ -1298,13 +1390,17 @@ class AgentOnlyComposer:
     ) -> list[TileMedia]:
         started = False
         peak_pending = 0
+        idle_since: float | None = None
         while True:
             if await self._gate_turn(page, run):
+                idle_since = None
                 continue
             state = await page.evaluate(_VIDEO_JS)
             named = [u for u in _video_uuids(state) if u not in baseline]
             peak_pending = max(peak_pending, state["pending"])
             run.saw_pending = run.saw_pending or bool(state["pending"])
+            in_flight = bool(await page.locator(IN_FLIGHT).count())
+            run.saw_in_flight = run.saw_in_flight or in_flight
             if peak_pending > count:
                 # One gate can cover several clips (its title names the count), so the
                 # one-approval rule alone does not stop an over-billed run.
@@ -1328,6 +1424,15 @@ class AgentOnlyComposer:
                 await _maybe_await(on_first_media(listed))
             if ready is not None:
                 return [ready]
+            busy = bool(
+                run.approvals
+                or in_flight
+                or state["pending"]
+                or named
+                or run.saw_pending
+                or run.listed
+            )
+            idle_since = await self._idle_turn(page, idle_since, busy=busy, made="video", run=run)
             await asyncio.sleep(POLL_S)
 
     async def _ready_video(
@@ -1452,19 +1557,33 @@ class AgentOnlyComposer:
                     )
                 return list(fresh.values())
             busy = bool(run.approvals or in_flight or fresh)
-            idle_since = await self._idle_turn(page, idle_since, busy=busy)
+            idle_since = await self._idle_turn(page, idle_since, busy=busy, made="image")
             await asyncio.sleep(POLL_S)
 
-    async def _idle_turn(self, page: Page, since: float | None, *, busy: bool) -> float | None:
-        """Fail an image turn that ended with no gate and no tile for ``IDLE_S``."""
+    async def _idle_turn(
+        self,
+        page: Page,
+        since: float | None,
+        *,
+        busy: bool,
+        made: str,
+        run: _Run | None = None,
+    ) -> float | None:
+        """Fail a turn that ended with no gate and no result for ``IDLE_S``."""
         if busy:
             return None
         since = since or time.monotonic()
         if time.monotonic() - since >= IDLE_S:
+            evidence = ""
+            if run is not None and run.kind == "video":
+                evidence = (
+                    f" (approvals={run.approvals}; pending seen: {run.saw_pending}; "
+                    f"in-flight seen: {run.saw_in_flight})"
+                )
             raise FlowAgentUiError(
                 detail=(
-                    "agent-only composer: the agent turn ended with no image and no "
-                    f"credit gate. Last reply: {await self._last_reply(page)}"
+                    f"agent-only composer: the agent turn ended with no {made} and no "
+                    f"credit gate{evidence}. Last reply: {await self._last_reply(page)}"
                 ),
                 retryable=False,
                 remediation_hint=_AFTER_SUBMIT_HINT,
@@ -1490,6 +1609,10 @@ class _Run:
     seen_before: frozenset[str] = frozenset()
     #: Whether this run's clip has shown as pending; the listing is not read before that.
     saw_pending: bool = False
+    #: Whether the stop button (a turn in flight) was ever seen after the submit.
+    saw_in_flight: bool = False
+    #: Whether the submit click was proven to start a turn (see `_confirm_submit_landed`).
+    submit_landed: bool = False
     #: Monotonic time before which the project listing is not read again (#1354).
     listing_after: float = 0.0
     #: (tile token, media id) the listing already named: kept while the hover player mounts.

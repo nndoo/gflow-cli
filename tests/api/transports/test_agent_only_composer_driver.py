@@ -53,8 +53,10 @@ FIXTURE = r"""
 <div id="panel"></div>
 <script>
 const S = Object.assign({kind: 'image', gates: 0, produce: 1, delay: 120, idle: false,
-  staleGate: false, preMedia: false, dupe: false, posterOnly: false}, window.SCENARIO || {});
-window.log = {submitted: null, approvals: 0, rejections: 0, approvedTitles: [], saves: []};
+  staleGate: false, preMedia: false, dupe: false, posterOnly: false, submitNoLand: false},
+  window.SCENARIO || {});
+window.log = {submitted: null, submitClicks: 0, approvals: 0, rejections: 0,
+  approvedTitles: [], saves: []};
 const state = {groups: [0, 1, 0, 0],
   models: {image: '\u{1F34C} Nano Banana 2', video: 'Omni 1.1 Flash'}, confirm: 0};
 const LIGS = [['crop_16_9', 'crop_landscape', 'crop_square', 'crop_portrait', 'crop_9_16'],
@@ -149,6 +151,8 @@ function produce() {
   }, S.delay);
 }
 function submit() {
+  window.log.submitClicks++;
+  if (S.submitNoLand && window.log.submitClicks === 1) return;  // click seen, no turn starts
   window.log.submitted = document.querySelector('.ProseMirror').innerText;
   // Measured: a re-render swaps an existing tile's cdn media for opaque /asb/ — same clip.
   if (S.rerenderOld) setTimeout(() => {
@@ -232,6 +236,7 @@ if (S.prePending) {
 @pytest.fixture(autouse=True)
 def _fast(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(aoc, "POLL_S", 0.05)
+    monkeypatch.setattr(aoc, "SUBMIT_LAND_S", 0.3)
     monkeypatch.setattr(aoc, "IDLE_S", 0.8)
     monkeypatch.setattr(aoc, "GATE_SETTLE_S", 2.0)
     monkeypatch.setattr(aoc, "LISTING_RETRY_S", 1.2)
@@ -379,8 +384,20 @@ async def test_a_re_rendered_old_tile_is_not_ready_while_the_new_clip_is_pending
 async def test_a_re_rendered_old_tile_is_not_a_new_clip(page: Page) -> None:
     """Head changed and nothing is pending, but no new uuid exists: nothing was made."""
     await _load(page, kind="video", rerenderOld=True, idle=True)
-    with pytest.raises(TransportTimeoutError):
+    with pytest.raises(FlowAgentUiError, match="no video") as exc:
         await aoc.AgentOnlyComposer().generate(page, "x", kind="video", count=1, budget_s=1.5)
+    _assert_not_retried(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_a_submit_click_that_does_not_land_is_clicked_once_more(page: Page) -> None:
+    """A click that leaves the prompt in the editor and starts no turn is not a send."""
+    await _load(page, kind="video", submitNoLand=True)
+    (media,) = await aoc.AgentOnlyComposer().generate(page, "x", kind="video", count=1, budget_s=10)
+    assert media.uuid == "00000000-0000-4000-8000-000000000100"
+    log = await _log(page)
+    assert log["submitClicks"] == 2
+    assert log["submitted"] == "x"
 
 
 @pytest.mark.asyncio
